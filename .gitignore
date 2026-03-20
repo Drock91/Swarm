@@ -1,0 +1,51 @@
+# JavaScript / Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Build output
+dist/
+build/
+out/
+cdk.out/
+
+# Environment & Secrets
+.env
+.env.*
+*.env
+secrets.yaml
+secrets.json
+*.pem
+*.key
+
+# AWS / Terraform
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Logs
+*.log
+logs/
+swarm_logs/
+
+# Local data / cache
+.cache/
+*.sqlite
+*.db
+local_data/
+tmp/
+
+# Testing
+coverage/
+.nyc_output/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp

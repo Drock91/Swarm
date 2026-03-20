@@ -1,0 +1,50 @@
+{
+  "name": "swarm",
+  "version": "1.0.0",
+  "description": "Swarm — Autonomous multi-node marketing agent system powered by AWS + OpenAI",
+  "type": "module",
+  "main": "swarm.mjs",
+  "scripts": {
+    "start": "node swarm.mjs",
+    "commander": "node run.mjs commander",
+    "status": "node status.mjs",
+    "dashboard": "node status.mjs --watch",
+    "deploy": "node infra/deploy.mjs",
+    "teardown": "node infra/teardown.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/client-ecs": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/client-sqs": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0",
+    "@elevenlabs/elevenlabs-js": "^2.39.0",
+    "@sendgrid/mail": "^8.1.0",
+    "axios": "^1.7.0",
+    "blessed": "^0.1.81",
+    "chalk": "^5.3.0",
+    "cheerio": "^1.0.0",
+    "cli-table3": "^0.6.5",
+    "date-fns": "^3.6.0",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.0",
+    "openai": "^4.52.0",
+    "ora": "^8.0.1",
+    "p-queue": "^8.0.1",
+    "p-retry": "^6.2.0",
+    "pino": "^9.3.0",
+    "pino-pretty": "^11.2.0",
+    "playwright": "^1.44.0",
+    "twilio": "^5.2.0",
+    "uuid": "^10.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "vitest": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

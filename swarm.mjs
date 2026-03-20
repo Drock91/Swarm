@@ -10,8 +10,9 @@
  */
 
 import 'dotenv/config';
-import { CommanderAgent } from './core/commander.mjs';
-import { log }             from './core/logger.mjs';
+import { CommanderAgent }            from './core/commander.mjs';
+import { log }                       from './core/logger.mjs';
+import { loadProfile, bootstrapGoals } from './core/profile.mjs';
 
 const region = process.env.AWS_REGION ?? 'us-east-1';
 
@@ -37,18 +38,30 @@ const config = {
     : {},
 };
 
-log.info({ event: 'commander_launch', region, node_queues: Object.keys(nodeQueues) });
+// Load business profile — drives campaigns, targeting, and LLM context
+const profile = loadProfile();
+if (profile) {
+  config.business_context = [
+    profile.business?.name,
+    profile.business?.description,
+    profile.offer?.primary ? `Offer: ${profile.offer.primary.name} @ ${profile.offer.primary.price}` : null,
+  ].filter(Boolean).join(' | ');
+}
+
+log.info({ event: 'commander_launch', region, node_queues: Object.keys(nodeQueues), has_profile: !!profile });
 
 const commander = new CommanderAgent(config, region);
 
-// Bootstrap initial campaigns if defined
-if (process.env.SWARM_BOOTSTRAP_GOALS) {
-  try {
-    const goals = JSON.parse(process.env.SWARM_BOOTSTRAP_GOALS);
-    await commander.bootstrapInitialCampaigns(goals);
-  } catch (err) {
-    log.warn({ event: 'bootstrap_parse_error', error: err.message });
-  }
+// Bootstrap campaigns — prefer profile.campaign_goals, fall back to env var
+const goals = profile
+  ? bootstrapGoals(profile)
+  : process.env.SWARM_BOOTSTRAP_GOALS
+    ? (() => { try { return JSON.parse(process.env.SWARM_BOOTSTRAP_GOALS); } catch { return []; } })()
+    : [];
+
+if (goals.length) {
+  log.info({ event: 'bootstrap_goals', count: goals.length, source: profile ? 'profile.json' : 'env' });
+  await commander.bootstrapInitialCampaigns(goals);
 }
 
 await commander.start();

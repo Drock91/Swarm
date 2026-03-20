@@ -1,0 +1,119 @@
+{
+  "_instructions": "Copy this file to profile.json and fill every field. The Swarm reads profile.json to configure all nodes automatically — targeting, email sequences, SEO keywords, and campaign goals all come from here. You never need to touch the code.",
+
+  "business": {
+    "name":             "Your Company Name",
+    "website":          "https://yourwebsite.com",
+    "description":      "One or two sentences describing what you do and who you serve.",
+    "differentiators": [
+      "Key advantage #1 over competitors",
+      "Key advantage #2",
+      "Key advantage #3"
+    ],
+    "social": {
+      "linkedin": "https://linkedin.com/company/your-handle",
+      "twitter":  "https://twitter.com/your-handle"
+    }
+  },
+
+  "offer": {
+    "primary": {
+      "name":        "Your Core Offer Name",
+      "price":       "$0/month",
+      "trial":       "Describe any free trial or guarantee",
+      "pain_solved": "The specific problem this offer solves",
+      "outcome":     "The concrete result the client achieves",
+      "cta_url":     "https://yourwebsite.com/get-started"
+    },
+    "secondary": {
+      "name":        "Optional lower-ticket or complementary offer",
+      "price":       "$0",
+      "description": "Brief description"
+    },
+    "upsell": {
+      "name":        "Optional higher-ticket / premium offer",
+      "price":       "$0",
+      "description": "Brief description"
+    }
+  },
+
+  "sender": {
+    "from_name":  "Your Name",
+    "persona":    "Describe the sender voice: e.g. 'friendly consultant, not salesy, uses short sentences'",
+    "signature":  "Your Name | Your Title | yourwebsite.com"
+  },
+
+  "icp": {
+    "description":    "One sentence portrait of your ideal client, e.g. 'Owner-operated restaurants with 1-3 locations in the US'",
+    "job_titles":     ["Owner", "Founder", "CEO", "General Manager"],
+    "industries":     ["Your Target Industry"],
+    "company_size_min": 1,
+    "company_size_max": 50,
+    "locations":      ["United States"],
+    "has_website":    true,
+    "pain_points": [
+      "Pain point your ICP feels most acutely",
+      "Second most painful problem",
+      "Third common objection or frustration"
+    ],
+    "exclude_keywords": ["words in a company name that disqualify them, e.g. 'franchise'"]
+  },
+
+  "email_sequences": {
+    "sequence_length":  3,
+    "follow_up_days":   [0, 3, 7],
+    "send_window_start": "08:00",
+    "send_window_end":   "17:00",
+    "send_days":        ["Monday","Tuesday","Wednesday","Thursday"],
+    "tone":             "conversational and direct, no corporate speak",
+    "templates": {
+      "step_1": {
+        "subject_angle": "Reference their specific pain point — do not pitch yet",
+        "body_notes":    "3 sentences max. Acknowledge a problem, hint at a solution, single soft CTA."
+      },
+      "step_2": {
+        "subject_angle": "Short follow-up, reference step 1",
+        "body_notes":    "2-4 sentences. Social proof or quick stat. Ask a qualifying question."
+      },
+      "step_3": {
+        "subject_angle": "Final follow-up — low pressure break-up style",
+        "body_notes":    "2-3 sentences. Leave door open. Offer a resource or next step."
+      }
+    }
+  },
+
+  "seo": {
+    "primary_keywords": [
+      "your core keyword",
+      "secondary keyword",
+      "long-tail keyword phrase"
+    ],
+    "content_angles": [
+      "How [ICP] can [achieve outcome] without [common obstacle]",
+      "The real cost of [pain point] for [ICP type]",
+      "Why [old solution] is failing [industry] owners in [year]"
+    ],
+    "target_blog_topics": 3,
+    "publish_frequency":  "2x per week"
+  },
+
+  "campaign_goals": [
+    {
+      "name":             "Primary Email Outreach",
+      "channel":          "email_node",
+      "primary_industry": "",
+      "daily_email_cap":  50,
+      "daily_budget_usd": 5,
+      "success_metric":   "reply_rate",
+      "target_rate":      0.03
+    },
+    {
+      "name":             "SEO Content",
+      "channel":          "seo_node",
+      "daily_email_cap":  0,
+      "daily_budget_usd": 2,
+      "success_metric":   "organic_impressions",
+      "target_rate":      0.05
+    }
+  ]
+}

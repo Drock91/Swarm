@@ -19,6 +19,10 @@ secrets.json
 *.pem
 *.key
 
+# Business profile (contains strategy — keep out of public repos)
+# Copy profile.example.json → profile.json and fill it in locally
+profile.json
+
 # AWS / Terraform
 *.tfstate
 *.tfstate.backup

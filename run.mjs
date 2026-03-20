@@ -16,8 +16,9 @@
  */
 
 import 'dotenv/config';
-import { createNode } from './nodes/index.mjs';
-import { log }        from './core/logger.mjs';
+import { createNode }                      from './nodes/index.mjs';
+import { log }                             from './core/logger.mjs';
+import { loadProfile, mergeProfileConfig } from './core/profile.mjs';
 
 const nodeType = process.argv[2] ?? process.env.NODE_TYPE;
 if (!nodeType) {
@@ -56,11 +57,15 @@ for (const [key, envKey] of Object.entries(envMap)) {
   if (!config[key] && process.env[envKey]) config[key] = process.env[envKey];
 }
 
-if (process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// Merge profile-derived defaults (profile fills gaps, env/CLI values always win)
+const profile = loadProfile();
+if (profile) {
+  config = mergeProfileConfig(nodeType, profile, config);
+}
 
 const region = process.env.AWS_REGION ?? 'us-east-1';
 
-log.info({ event: 'node_launch', node_type: nodeType, region });
+log.info({ event: 'node_launch', node_type: nodeType, region, has_profile: !!profile });
 
 const node = createNode(nodeType, config, region);
 await node.start();

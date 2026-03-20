@@ -179,6 +179,56 @@ export class SharedMemory {
   }
 
   // ------------------------------------------------------------------ //
+  //  SUPPRESSION / COMPLIANCE                                            //
+  // ------------------------------------------------------------------ //
+
+  /**
+   * Mark a lead as suppressed so no further emails are sent.
+   * @param {string} leadId
+   * @param {'bounced'|'complained'|'unsubscribed'} reason
+   */
+  async suppressLead(leadId, reason) {
+    const field   = reason;                          // bounced | complained | unsubscribed
+    const now     = new Date().toISOString();
+    await this.ddb.send(new UpdateCommand({
+      TableName:                 this._table('leads'),
+      Key:                       { lead_id: leadId },
+      UpdateExpression:          `SET #r = :t, suppressed_at = :ts, #st = :done`,
+      ExpressionAttributeNames:  { '#r': field, '#st': 'sequence_status' },
+      ExpressionAttributeValues: { ':t': true, ':ts': now, ':done': 'suppressed' },
+    }));
+  }
+
+  /**
+   * Look up a lead by email and suppress it.
+   * Returns the lead_id if found and suppressed, null otherwise.
+   */
+  async suppressByEmail(email, reason) {
+    const leads = await this.getLeads({ email }, 1);
+    if (!leads.length) return null;
+    await this.suppressLead(leads[0].lead_id, reason);
+    return leads[0].lead_id;
+  }
+
+  /**
+   * Check if an email address is suppressed (bounced/complained/unsubscribed).
+   */
+  async isEmailSuppressed(email) {
+    const leads = await this.getLeads({ email }, 1);
+    if (!leads.length) return false;
+    const l = leads[0];
+    return !!(l.bounced || l.complained || l.unsubscribed);
+  }
+
+  /**
+   * Get all suppressed leads (for admin/dashboard).
+   */
+  async getSuppressedLeads() {
+    const all = await this.getLeads(null, 5000);
+    return all.filter(l => l.bounced || l.complained || l.unsubscribed);
+  }
+
+  // ------------------------------------------------------------------ //
   //  METRICS                                                             //
   // ------------------------------------------------------------------ //
 

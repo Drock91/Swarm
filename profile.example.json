@@ -65,7 +65,7 @@
     "send_window_start": "08:00",
     "send_window_end":   "17:00",
     "send_days":        ["Monday","Tuesday","Wednesday","Thursday"],
-    "tone":             "conversational and direct, no corporate speak",
+    "tone":             "conversational and direct, like a real person. Short sentences. Simple words only. Never use dashes of any kind (no em dash, no en dash, no ' - '). No corporate or formal language.",
     "templates": {
       "step_1": {
         "subject_angle": "Reference their specific pain point — do not pitch yet",

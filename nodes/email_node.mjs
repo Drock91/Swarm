@@ -196,17 +196,33 @@ export class EmailNode extends BaseNode {
     return this._generateSubject(lead);
   }
 
+  // Strip any AI-tell punctuation that slips through LLM output
+  _sanitizeCopy(text) {
+    return text
+      .replace(/\s*\u2014\s*/g, ' ')   // em dash —
+      .replace(/\s*\u2013\s*/g, ' ')   // en dash –
+      .replace(/\s+-\s+/g, ' ')        // spaced hyphen " - "
+      .replace(/\s{2,}/g, ' ')         // collapse double spaces
+      .trim();
+  }
+
   async _generateSubject(lead) {
     try {
       const resp = await this.openai.chat.completions.create({
         model:      'gpt-4o-mini',
         messages:   [{ role: 'user', content:
-          `Write a compelling cold email subject line for ${lead.name ?? 'a prospect'} ` +
-          `at ${lead.company ?? 'their company'}. One line only.` }],
+          `Write a cold email subject line for ${lead.name ?? 'a prospect'} ` +
+          `at ${lead.company ?? 'their company'}.\n\n` +
+          `Rules:\n` +
+          `- One line only, no punctuation at the end\n` +
+          `- Do NOT use dashes of any kind (no —, no –, no " - ")\n` +
+          `- Keep it short and plain, like a real person typed it\n` +
+          `- No big or formal words` }],
         max_tokens: 50,
         temperature: 0.8,
       });
-      return resp.choices[0].message.content.trim().replace(/^"|"$/g, '');
+      const raw = resp.choices[0].message.content.trim().replace(/^"|"$/g, '');
+      return this._sanitizeCopy(raw);
     } catch {
       return this.subjectLines[0];
     }
@@ -214,24 +230,31 @@ export class EmailNode extends BaseNode {
 
   async _generateEmailBody(lead, step) {
     if (this.emailTemplates[step]) {
-      return this.emailTemplates[step]
-        .replace(/\{\{name\}\}/g, lead.name ?? 'there')
-        .replace(/\{\{company\}\}/g, lead.company ?? 'your company');
+      return this._sanitizeCopy(
+        this.emailTemplates[step]
+          .replace(/\{\{name\}\}/g, lead.name ?? 'there')
+          .replace(/\{\{company\}\}/g, lead.company ?? 'your company')
+      );
     }
     try {
       const resp = await this.openai.chat.completions.create({
         model:      'gpt-4o-mini',
         messages:   [{ role: 'user', content:
-          `Write a short, personalized cold email body (step ${step + 1} of a sequence) for:\n` +
+          `Write a short cold email (step ${step + 1} of a sequence) for:\n` +
           `Name: ${lead.name ?? 'there'}\nCompany: ${lead.company ?? ''}\n` +
           `Title: ${lead.title ?? ''}\nPain point: ${lead.pain_point ?? ''}\n\n` +
-          `Be conversational, not salesy. Under 120 words. No subject line. Sign off as '${this.fromName}'.` }],
+          `Rules (read carefully):\n` +
+          `- Under 120 words\n` +
+          `- Do NOT use dashes of any kind. No em dash (—), no en dash (–), no spaced hyphen (word - word). Just skip them.\n` +
+          `- Write like a normal person texting a colleague. Simple words only.\n` +
+          `- No formal or corporate language. No words like \"leverage\", \"utilize\", \"endeavor\", \"facilitate\", \"streamline\", \"robust\", \"synergy\".\n` +
+          `- No subject line. Sign off as '${this.fromName}'.` }],
         max_tokens:  250,
         temperature: 0.7,
       });
-      return resp.choices[0].message.content.trim();
+      return this._sanitizeCopy(resp.choices[0].message.content.trim());
     } catch {
-      return `Hey ${lead.name ?? 'there'}, quick thought — would love to connect. Best, ${this.fromName}`;
+      return `Hey ${lead.name ?? 'there'}, just wanted to reach out. Would love to connect. Best, ${this.fromName}`;
     }
   }
 

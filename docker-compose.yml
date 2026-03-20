@@ -29,6 +29,9 @@ services:
 
   # ── Scraper (lead generation) ────────────────────────────────────────────────
   scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: the-swarm-node
     container_name: swarm-scraper
     env_file: .env
@@ -42,6 +45,9 @@ services:
 
   # ── Email Seed (primary sender) ──────────────────────────────────────────────
   email-seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: the-swarm-node
     container_name: swarm-email-seed
     env_file: .env
@@ -59,6 +65,9 @@ services:
 
   # ── Analytics ────────────────────────────────────────────────────────────────
   analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: the-swarm-node
     container_name: swarm-analytics
     env_file: .env

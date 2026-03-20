@@ -76,25 +76,19 @@ const TABLES = [
     TableName:             'swarm-metrics',
     BillingMode:           'PAY_PER_REQUEST',
     KeySchema: [
-      { AttributeName: 'node_id',   KeyType: 'HASH' },
-      { AttributeName: 'metric_ts', KeyType: 'RANGE' },
+      { AttributeName: 'pk',        KeyType: 'HASH' },
+      { AttributeName: 'timestamp', KeyType: 'RANGE' },
     ],
     AttributeDefinitions: [
-      { AttributeName: 'node_id',   AttributeType: 'S' },
-      { AttributeName: 'metric_ts', AttributeType: 'S' },
+      { AttributeName: 'pk',        AttributeType: 'S' },
+      { AttributeName: 'timestamp', AttributeType: 'N' },
     ],
   },
   {
     TableName:             'swarm-knowledge',
     BillingMode:           'PAY_PER_REQUEST',
-    KeySchema: [
-      { AttributeName: 'source_node', KeyType: 'HASH' },
-      { AttributeName: 'stored_at',   KeyType: 'RANGE' },
-    ],
-    AttributeDefinitions: [
-      { AttributeName: 'source_node', AttributeType: 'S' },
-      { AttributeName: 'stored_at',   AttributeType: 'S' },
-    ],
+    KeySchema:             [{ AttributeName: 'knowledge_id', KeyType: 'HASH' }],
+    AttributeDefinitions:  [{ AttributeName: 'knowledge_id', AttributeType: 'S' }],
   },
   {
     TableName:             'swarm-calls',

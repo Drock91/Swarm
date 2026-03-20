@@ -5,12 +5,13 @@
   "type": "module",
   "main": "swarm.mjs",
   "scripts": {
-    "start": "node swarm.mjs",
+    "start":     "node swarm.mjs",
     "commander": "node run.mjs commander",
-    "status": "node status.mjs",
+    "status":    "node status.mjs",
     "dashboard": "node status.mjs --watch",
-    "deploy": "node infra/deploy.mjs",
-    "teardown": "node infra/teardown.mjs"
+    "cli":       "node cli.mjs",
+    "deploy":    "node infra/deploy.mjs",
+    "teardown":  "node infra/teardown.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.600.0",
@@ -26,6 +27,7 @@
     "cheerio": "^1.0.0",
     "cli-table3": "^0.6.5",
     "date-fns": "^3.6.0",
+    "dockerode": "^4.0.9",
     "dotenv": "^16.4.5",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.0",
@@ -40,6 +42,7 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@types/dockerode": "^4.0.1",
     "@types/node": "^22.0.0",
     "vitest": "^1.6.0"
   },

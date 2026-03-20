@@ -51,6 +51,15 @@ export class BaseNode {
     this.sqs      = new SQSClient({ region });
     this.queueUrl = config.queue_url ?? '';
 
+    // Self-destruct settings
+    // Seed nodes (id contains 'seed') never self-destruct by default
+    const isSeed              = this.nodeId.includes('seed');
+    this.allowSelfDestruct    = config.allow_self_destruct    ?? !isSeed;
+    this.maxFailedCycles      = config.max_failed_cycles      ?? Number(process.env.SWARM_MAX_FAILED_CYCLES   ?? 3);
+    this.selfDestructThreshold = config.self_destruct_threshold ?? Number(process.env.SWARM_KILLER_THRESHOLD ?? 0.01);
+    this._failedCycles        = 0;
+    this._improvementHistory  = []; // [{cycle, configDiff, scoreBefore, scoreAfter}]
+
     log.info({ event: 'node_created', node_id: this.nodeId, node_type: this.nodeType, generation: this.generation });
   }
 
@@ -141,15 +150,56 @@ export class BaseNode {
   }
 
   async _improvementLoop() {
+    let cycleNumber = 0;
     while (this._running) {
       await sleep(this.constructor.IMPROVEMENT_INTERVAL);
       try {
-        log.info({ event: 'self_improvement_start', node_id: this.nodeId });
-        const ctx    = this.getImprovementContext();
-        const update = await this.improver.run(this.nodeId, ctx);
-        if (update) {
+        cycleNumber++;
+        log.info({ event: 'self_improvement_start', node_id: this.nodeId, cycle: cycleNumber });
+
+        const ctx         = this.getImprovementContext();
+        const scoreBefore = this._computeScore(this.collectMetrics());
+        const update      = await this.improver.run(this.nodeId, ctx);
+
+        if (update && Object.keys(update).length) {
           this._applyImprovement(update);
-          log.info({ event: 'self_improvement_applied', node_id: this.nodeId, keys: Object.keys(update) });
+          log.info({ event: 'self_improvement_applied', node_id: this.nodeId, cycle: cycleNumber, keys: Object.keys(update) });
+        }
+
+        const scoreAfter = this._computeScore(this.collectMetrics());
+
+        // Track history for failure report
+        this._improvementHistory.push({
+          cycle:       cycleNumber,
+          configDiff:  update ?? {},
+          scoreBefore,
+          scoreAfter,
+          timestamp:   new Date().toISOString(),
+        });
+
+        // Self-destruct eligibility check
+        if (this.allowSelfDestruct) {
+          if (scoreAfter < this.selfDestructThreshold) {
+            this._failedCycles++;
+            log.warn({
+              event:         'failed_improvement_cycle',
+              node_id:        this.nodeId,
+              cycle:          cycleNumber,
+              score:          scoreAfter,
+              failed_cycles:  this._failedCycles,
+              max_before_destruct: this.maxFailedCycles,
+            });
+            if (this._failedCycles >= this.maxFailedCycles) {
+              await this._selfDestruct(ctx, this.collectMetrics(), scoreAfter);
+              return; // exit loop — process will exit inside _selfDestruct
+            }
+          } else {
+            // Any improvement resets the failure counter
+            if (this._failedCycles > 0) {
+              log.info({ event: 'failure_counter_reset', node_id: this.nodeId, score: scoreAfter });
+              this._failedCycles = 0;
+            }
+          }
         }
       } catch (err) {
         log.error({ event: 'improvement_error', node_id: this.nodeId, error: err.message });
@@ -176,10 +226,17 @@ export class BaseNode {
 
   async _absorbSwarmKnowledge() {
     try {
-      const patterns = await this.swarmIQ.getBestPatterns(5);
+      const [patterns, failures] = await Promise.all([
+        this.swarmIQ.getBestPatterns(5),
+        this.memory.getFailureKnowledge(this.nodeType, 10),
+      ]);
       if (patterns.length) {
         log.info({ event: 'absorbing_swarm_knowledge', node_id: this.nodeId, count: patterns.length });
         this._integratePatterns(patterns);
+      }
+      if (failures.length) {
+        log.info({ event: 'absorbing_failure_knowledge', node_id: this.nodeId, failures: failures.length });
+        this._integrateFailureKnowledge(failures);
       }
     } catch (err) {
       log.warn({ event: 'absorb_knowledge_error', node_id: this.nodeId, error: err.message });
@@ -194,6 +251,94 @@ export class BaseNode {
         this.config[key] = val;
       }
     }
+  }
+
+  /**
+   * Absorb negative knowledge from dead nodes.
+   * Any config value that is flagged in a failure report gets cleared
+   * so the improvement engine finds a different value instead.
+   */
+  _integrateFailureKnowledge(failures) {
+    for (const f of failures) {
+      const avoid = f.data?.configs_to_avoid ?? {};
+      const bad   = f.data?.segments_or_targets_to_avoid ?? [];
+      for (const [key, val] of Object.entries(avoid)) {
+        // If we currently have the exact same config value that killed a predecessor, clear it
+        if (JSON.stringify(this.config[key]) === JSON.stringify(val)) {
+          log.debug({ event: 'avoiding_failed_config', node_id: this.nodeId, key, val });
+          delete this.config[key];
+        }
+      }
+      // Store bad targets in config so the node's own logic can filter them out
+      if (bad.length) {
+        this.config._known_bad_targets = [
+          ...(this.config._known_bad_targets ?? []),
+          ...bad,
+        ].slice(-50); // cap at 50 entries
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ //
+  //  SELF-DESTRUCT                                                       //
+  // ------------------------------------------------------------------ //
+
+  /**
+   * Called after maxFailedCycles consecutive improvement cycles below threshold.
+   * 1. Generates LLM failure report
+   * 2. Broadcasts failure knowledge to the swarm
+   * 3. Deregisters from DynamoDB
+   * 4. Exits the process
+   */
+  async _selfDestruct(ctx, metrics, finalScore) {
+    log.warn({
+      event:         'self_destruct_initiated',
+      node_id:       this.nodeId,
+      node_type:     this.nodeType,
+      generation:    this.generation,
+      final_score:   finalScore,
+      failed_cycles: this._failedCycles,
+      uptime_hours:  +((Date.now() - this.startedAt.getTime()) / 3_600_000).toFixed(2),
+    });
+
+    try {
+      // 1. Generate structured failure report via LLM
+      const report = await this.improver.generateFailureReport(
+        this.nodeId,
+        { ...ctx, generation: this.generation, parent_id: this.parentId },
+        metrics,
+        this._failedCycles,
+        this._improvementHistory,
+      );
+
+      log.warn({ event: 'failure_report_generated', node_id: this.nodeId, summary: report.what_was_tried });
+
+      // 2. Broadcast failure knowledge so successors avoid the same path
+      await this.memory.storeKnowledge(
+        this.nodeType,
+        'failure',
+        {
+          ...report,
+          node_id:          this.nodeId,
+          generation:       this.generation,
+          parent_id:        this.parentId,
+          config_at_death:  { ...this.config },
+          metrics_at_death: metrics,
+          final_score:      finalScore,
+          failed_cycles:    this._failedCycles,
+          improvement_history: this._improvementHistory,
+        },
+        0, // score 0 — marks it as negative knowledge
+      );
+
+      log.warn({ event: 'failure_knowledge_broadcast', node_id: this.nodeId, node_type: this.nodeType });
+    } catch (err) {
+      log.error({ event: 'self_destruct_report_failed', node_id: this.nodeId, error: err.message });
+    }
+
+    // 3. Graceful shutdown
+    await this.stop('self_destruct_underperformer');
+    process.exit(0);
   }
 
   _applyImprovement(update) {

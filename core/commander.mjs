@@ -13,10 +13,16 @@
 import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { randomUUID } from 'crypto';
+import Docker from 'dockerode';
 import OpenAI from 'openai';
 import { SharedMemory } from './shared_memory.mjs';
 import { SwarmIntelligence } from './swarm_intelligence.mjs';
 import { log } from './logger.mjs';
+
+// Docker socket — works inside a container on any OS
+const DOCKER_OPTS = process.platform === 'win32' && !process.env.RUNNING_IN_DOCKER
+  ? { socketPath: '//./pipe/docker_engine' }
+  : { socketPath: '/var/run/docker.sock' };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -26,7 +32,7 @@ You orchestrate multiple specialized nodes (email, SEO, scraper, analytics).
 
 Given current metrics, active campaigns, and node statuses, decide:
 1. Which campaigns to prioritize or pause
-2. Which nodes to scale up (spawn another instance) or kill
+2. Which nodes to scale up (spawn another instance / clone) or kill
 3. How to reallocate budget/rate limits
 4. What new campaigns to launch this cycle
 
@@ -54,11 +60,29 @@ export class CommanderAgent {
     this._swarmIQCache   = {};
 
     // Maps of node_type → AWS resource
-    this.nodeQueues      = config.node_queues ?? {};        // { email_node: "https://sqs..." }
-    this.taskDefinitions = config.task_definitions ?? {};   // { email_node: "swarm-email:3" }
+    this.nodeQueues      = config.node_queues ?? {};        // { email_node: 'https://sqs...' }
+    this.taskDefinitions = config.task_definitions ?? {};   // { email_node: 'swarm-email:3' }
     this.ecsCluster      = config.ecs_cluster ?? 'swarm-cluster';
 
-    log.info({ event: 'commander_created', commander_id: this.nodeId });
+    // Runtime mode: 'local' (Docker) or 'fargate' (ECS)
+    this.runtime         = (config.runtime ?? process.env.RUNTIME ?? 'local').toLowerCase();
+    this.docker          = this.runtime === 'local' ? new Docker(DOCKER_OPTS) : null;
+    this.dockerImage     = config.docker_image ?? process.env.SWARM_DOCKER_IMAGE   ?? 'the-swarm-node';
+    this.dockerNetwork    = config.docker_network ?? process.env.SWARM_DOCKER_NETWORK ?? 'the-swarm_swarm-net';
+
+    // Clone management
+    this.maxEmailClones   = config.max_email_clones   ?? Number(process.env.SWARM_MAX_EMAIL_CLONES ?? 5);
+    this.cloneThreshold   = config.clone_threshold    ?? Number(process.env.SWARM_CLONE_THRESHOLD  ?? 0.05);
+    this.killerThreshold  = config.killer_threshold   ?? Number(process.env.SWARM_KILLER_THRESHOLD ?? 0.01);
+    this.cloneWindowHours = config.clone_window_hours ?? Number(process.env.SWARM_CLONE_WINDOW_H   ?? 48);
+
+    // Sender identities for clones: comma-separated emails in SWARM_SENDER_EMAILS
+    this.senderEmails = (process.env.SWARM_SENDER_EMAILS ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    log.info({ event: 'commander_created', commander_id: this.nodeId, runtime: this.runtime });
   }
 
   // ------------------------------------------------------------------ //
@@ -81,7 +105,7 @@ export class CommanderAgent {
 
   async start() {
     this._running = true;
-    log.info({ event: 'commander_starting', commander_id: this.nodeId });
+    log.info({ event: 'commander_starting', commander_id: this.nodeId, runtime: this.runtime });
 
     process.once('SIGINT',  async () => { await this.stop(); process.exit(0); });
     process.once('SIGTERM', async () => { await this.stop(); process.exit(0); });
@@ -89,6 +113,7 @@ export class CommanderAgent {
     await Promise.allSettled([
       this._orchestrationLoop(),
       this._campaignMonitorLoop(),
+      this._cloneMonitorLoop(),
     ]);
   }
 
@@ -190,17 +215,65 @@ export class CommanderAgent {
   //  NODE MANAGEMENT                                                     //
   // ------------------------------------------------------------------ //
 
-  async _spawnNode(nodeType, baseConfig = {}) {
-    const swarmIQ    = this._swarmFor(nodeType);
+  async _spawnNode(nodeType, baseConfig = {}, senderEmail = null) {
+    const swarmIQ     = this._swarmFor(nodeType);
     const synthConfig = await swarmIQ.synthesizeOptimalConfig(5) ?? {};
     const merged      = { ...synthConfig, ...baseConfig };
-    const taskDef     = this.taskDefinitions[nodeType];
 
+    if (this.runtime === 'local') {
+      return this._spawnDockerNode(nodeType, merged, senderEmail);
+    }
+    return this._spawnFargateNode(nodeType, merged);
+  }
+
+  // ── Local Docker spawn ──────────────────────────────────────────── //
+
+  async _spawnDockerNode(nodeType, config = {}, senderEmail = null) {
+    const nodeId = `${nodeType.replace('_node', '')}-clone-${randomUUID().slice(0, 6)}`;
+    const env = [
+      `NODE_TYPE=${nodeType}`,
+      `NODE_ID=${nodeId}`,
+      `AWS_REGION=${this.region}`,
+      `AWS_ACCESS_KEY_ID=${process.env.AWS_ACCESS_KEY_ID ?? ''}`,
+      `AWS_SECRET_ACCESS_KEY=${process.env.AWS_SECRET_ACCESS_KEY ?? ''}`,
+      `OPENAI_API_KEY=${process.env.OPENAI_API_KEY ?? ''}`,
+      `SENDGRID_API_KEY=${process.env.SENDGRID_API_KEY ?? ''}`,
+      `SENDGRID_FROM_NAME=${process.env.SENDGRID_FROM_NAME ?? ''}`,
+      `SENDGRID_FROM_EMAIL=${senderEmail ?? process.env.SENDGRID_FROM_EMAIL ?? ''}`,
+      `NODE_CONFIG=${JSON.stringify(config)}`,
+      `RUNNING_IN_DOCKER=1`,
+      // Pass all SWARM_* queue URLs through
+      ...Object.entries(process.env)
+        .filter(([k]) => k.startsWith('SWARM_') && k.endsWith('_QUEUE_URL'))
+        .map(([k, v]) => `${k}=${v}`),
+    ];
+
+    try {
+      const container = await this.docker.createContainer({
+        Image:      this.dockerImage,
+        name:       nodeId,
+        Env:        env,
+        HostConfig: { NetworkMode: this.dockerNetwork, AutoRemove: false, RestartPolicy: { Name: 'unless-stopped' } },
+      });
+      await container.start();
+      log.info({ event: 'docker_node_spawned', node_id: nodeId, node_type: nodeType, container_id: container.id.slice(0, 12) });
+      // Register in DynamoDB so status dashboard picks it up
+      await this.memory.registerNode(nodeId, nodeType, { container_id: container.id, generation: config.generation ?? 1, sender_email: senderEmail });
+      return container.id;
+    } catch (err) {
+      log.error({ event: 'docker_spawn_error', node_type: nodeType, error: err.message });
+      return null;
+    }
+  }
+
+  // ── Fargate spawn ───────────────────────────────────────────────── //
+
+  async _spawnFargateNode(nodeType, config = {}) {
+    const taskDef = this.taskDefinitions[nodeType];
     if (!taskDef) {
       log.warn({ event: 'no_task_definition', node_type: nodeType });
       return null;
     }
-
     try {
       const resp = await this.ecs.send(new RunTaskCommand({
         cluster:              this.ecsCluster,
@@ -211,17 +284,17 @@ export class CommanderAgent {
           containerOverrides: [{
             name:        nodeType,
             environment: [
-              { name: 'NODE_CONFIG', value: JSON.stringify(merged) },
+              { name: 'NODE_CONFIG', value: JSON.stringify(config) },
               { name: 'NODE_TYPE',   value: nodeType },
             ],
           }],
         },
       }));
       const taskArn = resp.tasks?.[0]?.taskArn ?? null;
-      log.info({ event: 'node_spawned', node_type: nodeType, task_arn: taskArn });
+      log.info({ event: 'fargate_node_spawned', node_type: nodeType, task_arn: taskArn });
       return taskArn;
     } catch (err) {
-      log.error({ event: 'spawn_error', node_type: nodeType, error: err.message });
+      log.error({ event: 'fargate_spawn_error', node_type: nodeType, error: err.message });
       return null;
     }
   }
@@ -229,6 +302,8 @@ export class CommanderAgent {
   async _killNode(nodeId) {
     const node = await this.memory.getNode(nodeId);
     if (!node) return;
+
+    // Send graceful shutdown via SQS first
     const queueUrl = this.nodeQueues[node.node_type];
     if (queueUrl) {
       await this.sqs.send(new SendMessageCommand({
@@ -236,8 +311,80 @@ export class CommanderAgent {
         MessageBody: JSON.stringify({ command: 'shutdown', target_node_id: nodeId }),
       }));
     }
+
+    // If running locally, also stop + remove the Docker container
+    if (this.runtime === 'local' && node.container_id) {
+      try {
+        const c = this.docker.getContainer(node.container_id);
+        await c.stop({ t: 10 }).catch(() => {});
+        await c.remove().catch(() => {});
+        log.info({ event: 'docker_container_removed', node_id: nodeId });
+      } catch (err) {
+        log.warn({ event: 'docker_remove_warn', node_id: nodeId, error: err.message });
+      }
+    }
+
     await this.memory.deregisterNode(nodeId, 'commander_killed');
     log.info({ event: 'node_killed', node_id: nodeId });
+  }
+
+  // ------------------------------------------------------------------ //
+  //  CLONE MONITOR LOOP  (reply-rate threshold + genetic evolution)      //
+  // ------------------------------------------------------------------ //
+
+  async _cloneMonitorLoop() {
+    const checkInterval = 30 * 60 * 1000; // every 30 minutes
+    while (this._running) {
+      await sleep(checkInterval);
+      try {
+        await this._evaluateEmailClones();
+      } catch (err) {
+        log.error({ event: 'clone_monitor_error', error: err.message });
+      }
+    }
+  }
+
+  async _evaluateEmailClones() {
+    const nodes        = await this.memory.getAllNodes();
+    const emailNodes   = nodes.filter(n => n.node_type === 'email_node' && n.status === 'running');
+    const clones       = emailNodes.filter(n => n.node_id.includes('clone'));
+    const windowMs     = this.cloneWindowHours * 3_600_000;
+
+    if (!emailNodes.length) return;
+
+    for (const node of emailNodes) {
+      const m       = node.metrics_summary ?? {};
+      const replyRate = m.reply_rate ?? 0;
+      const ageMs   = node.started_at ? Date.now() - new Date(node.started_at).getTime() : 0;
+
+      // Kill consistent underperformers after window has elapsed
+      if (ageMs > windowMs && replyRate < this.killerThreshold && node.node_id.includes('clone')) {
+        log.info({ event: 'killing_underperformer', node_id: node.node_id, reply_rate: replyRate });
+        await this._killNode(node.node_id);
+        continue;
+      }
+
+      // Spawn a child clone from a winner
+      if (replyRate >= this.cloneThreshold && clones.length < this.maxEmailClones) {
+        log.info({ event: 'winner_detected', node_id: node.node_id, reply_rate: replyRate, spawning_child: true });
+        const parentConfig  = node.node_config ?? {};
+        const newGeneration = (parentConfig.generation ?? 1) + 1;
+        const swarmIQ       = this._swarmFor('email_node');
+        const evolvedConfig = await swarmIQ.spawnImprovedNodeConfig(parentConfig, replyRate) ?? {};
+        evolvedConfig.generation      = newGeneration;
+        evolvedConfig.parent_node_id  = node.node_id;
+
+        // Pick a sender email not already in use
+        const usedEmails   = emailNodes.map(n => n.sender_email).filter(Boolean);
+        const availEmail   = this.senderEmails.find(e => !usedEmails.includes(e)) ?? null;
+
+        await this._spawnNode('email_node', evolvedConfig, availEmail);
+      }
+    }
+
+    const activeClones = (await this.memory.getAllNodes())
+      .filter(n => n.node_type === 'email_node' && n.node_id.includes('clone') && n.status === 'running');
+    log.info({ event: 'clone_monitor_tick', email_nodes: emailNodes.length, active_clones: activeClones.length, max: this.maxEmailClones });
   }
 
   async _distributeCampaign(campaign) {

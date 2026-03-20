@@ -16,14 +16,38 @@
 import 'dotenv/config';
 import chalk      from 'chalk';
 import Table      from 'cli-table3';
+import Docker     from 'dockerode';
 import { SharedMemory } from './core/shared_memory.mjs';
 
-const WATCH_INTERVAL = 30_000; // 30 seconds
+const WATCH_INTERVAL = 30_000;
 const args           = process.argv.slice(2);
 const watchMode      = args.includes('--watch');
 const jsonMode       = args.includes('--json');
 const region         = process.env.AWS_REGION ?? 'us-east-1';
 const memory         = new SharedMemory(region);
+
+// Docker client — Windows named pipe when running on host, socket when in container
+const DOCKER_OPTS = process.platform === 'win32' && !process.env.RUNNING_IN_DOCKER
+  ? { socketPath: '//./pipe/docker_engine' }
+  : { socketPath: '/var/run/docker.sock' };
+const docker = new Docker(DOCKER_OPTS);
+
+async function getDockerContainers() {
+  try {
+    const containers = await docker.listContainers({ all: true });
+    return containers
+      .filter(c => c.Names.some(n => n.includes('swarm')))
+      .map(c => ({
+        name:    c.Names[0]?.replace('/', '') ?? '?',
+        image:   c.Image,
+        state:   c.State,   // running / exited / created
+        status:  c.Status,  // '15 minutes ago' etc
+        id:      c.Id.slice(0, 12),
+      }));
+  } catch {
+    return null; // Docker not reachable
+  }
+}
 
 // ------------------------------------------------------------------ //
 //  COST ESTIMATES (rough AWS pricing)                                  //
@@ -76,8 +100,27 @@ async function printStatus() {
   console.log(chalk.green(`  ● Running: ${running.length}`) + '   ' + chalk.red(`■ Stopped: ${stopped.length}`));
   console.log();
 
+  // ── Docker Container Status ──────────────────────────────────────── //
+  const containers = await getDockerContainers();
+  if (containers) {
+    const dt = new Table({
+      head: [chalk.bold('CONTAINER'), chalk.bold('IMAGE'), chalk.bold('STATE'), chalk.bold('STATUS'), chalk.bold('ID')],
+      colWidths: [26, 20, 10, 28, 14],
+      style: { border: ['gray'] },
+    });
+    for (const c of containers) {
+      const stateStr = c.state === 'running'
+        ? chalk.green('running')
+        : c.state === 'exited' ? chalk.red('exited') : chalk.yellow(c.state);
+      dt.push([c.name, c.image.slice(0, 19), stateStr, c.status, c.id]);
+    }
+    console.log(chalk.bold('  ── DOCKER CONTAINERS ──────────────────────────────────────'));
+    console.log(dt.toString());
+    console.log();
+  }
+
   if (!nodes.length) {
-    console.log(chalk.yellow('  No nodes registered. Launch nodes with: node run.mjs <node_type>'));
+    console.log(chalk.yellow('  No nodes registered. Launch with: docker compose up -d'));
     return;
   }
 

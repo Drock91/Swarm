@@ -187,4 +187,76 @@ Respond with JSON: { "variants": ["...", "..."] }
     }
     return scores.length ? +(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(4) : 0;
   }
+
+  // ------------------------------------------------------------------ //
+  //  FAILURE REPORT (self-destruct knowledge broadcast)                  //
+  // ------------------------------------------------------------------ //
+
+  /**
+   * Called when a node is about to self-destruct after maxFailedCycles.
+   * Generates a structured LLM report of what was tried and why it failed
+   * so successor nodes can avoid repeating the same mistakes.
+   *
+   * @param {string} nodeId
+   * @param {object} context      - node's getImprovementContext() output
+   * @param {object} metrics      - collectMetrics() output at time of death
+   * @param {number} failedCycles - how many improvement cycles failed
+   * @param {Array}  history      - improvement history [{cycle, configDiff, score}]
+   * @returns {Promise<object>}
+   */
+  async generateFailureReport(nodeId, context, metrics, failedCycles, history = []) {
+    const prompt = JSON.stringify({
+      node_id:          nodeId,
+      node_type:        this.nodeType,
+      generation:       context.generation ?? 1,
+      parent_id:        context.parent_id ?? null,
+      failed_cycles:    failedCycles,
+      final_metrics:    metrics,
+      current_config:   context.config ?? {},
+      improvement_history: history.slice(-failedCycles).map(h => ({
+        cycle:          h.cycle,
+        config_changes: h.configDiff,
+        score_before:   h.scoreBefore,
+        score_after:    h.scoreAfter,
+      })),
+    }, null, 2);
+
+    try {
+      const resp = await this.openai.chat.completions.create({
+        model:           this.llmModel,
+        messages: [
+          {
+            role:    'system',
+            content: `You analyze why an autonomous ${this.nodeType} marketing agent failed to reach its
+performance threshold after ${failedCycles} optimization cycles and is shutting itself down.
+
+Your analysis will be stored in the swarm knowledge base and read by future nodes
+before they start, so they don't repeat these mistakes.
+
+Respond ONLY with a JSON object:
+{
+  "what_was_tried":                  "plain-english summary of configs attempted",
+  "likely_failure_reasons":          ["reason 1", "reason 2", ...],
+  "configs_to_avoid":                { "config_key": value, ... },
+  "segments_or_targets_to_avoid":    ["..."],
+  "recommendations_for_successors":  "specific actionable advice for the next generation"
+}`.trim(),
+          },
+          { role: 'user', content: prompt },
+        ],
+        response_format: { type: 'json_object' },
+        temperature:     0.3,
+      });
+      return JSON.parse(resp.choices[0].message.content);
+    } catch (err) {
+      log.error({ event: 'failure_report_llm_error', node_id: nodeId, error: err.message });
+      return {
+        what_was_tried:                 'unknown — LLM unavailable at time of death',
+        likely_failure_reasons:        ['LLM call failed'],
+        configs_to_avoid:              context.config ?? {},
+        segments_or_targets_to_avoid:  [],
+        recommendations_for_successors: 'Review metrics manually',
+      };
+    }
+  }
 }

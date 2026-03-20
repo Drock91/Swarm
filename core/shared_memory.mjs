@@ -253,6 +253,23 @@ export class SharedMemory {
       .slice(0, topN);
   }
 
+  /**
+   * Fetch failure knowledge — what didn't work for a given node type.
+   * Nodes absorb this on startup to avoid repeating known-bad configs.
+   */
+  async getFailureKnowledge(nodeType, topN = 10) {
+    const resp = await this.ddb.send(new ScanCommand({
+      TableName:                 this._table('knowledge'),
+      FilterExpression:          'node_type = :nt AND pattern_type = :pt',
+      ExpressionAttributeValues: { ':nt': nodeType, ':pt': 'failure' },
+    }));
+    const items = resp.Items ?? [];
+    // Most recent failures first
+    return items
+      .sort((a, b) => new Date(b.created_at ?? 0) - new Date(a.created_at ?? 0))
+      .slice(0, topN);
+  }
+
   async incrementKnowledgeWin(knowledgeId) {
     await this.ddb.send(new UpdateCommand({
       TableName:                 this._table('knowledge'),

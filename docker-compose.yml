@@ -1,0 +1,97 @@
+networks:
+  swarm-net:
+
+volumes:
+  portainer_data:
+
+services:
+
+  # ── Commander Brain ──────────────────────────────────────────────────────────
+  commander:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: the-swarm-node          # shared image tag — all clones use this
+    container_name: swarm-commander
+    command: ["node", "swarm.mjs"]
+    env_file: .env
+    environment:
+      RUNTIME: local
+      RUNNING_IN_DOCKER: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - swarm-net
+    restart: unless-stopped
+    depends_on:
+      - scraper
+      - analytics
+
+  # ── Scraper (lead generation) ────────────────────────────────────────────────
+  scraper:
+    image: the-swarm-node
+    container_name: swarm-scraper
+    env_file: .env
+    environment:
+      NODE_TYPE: scraper_node
+      NODE_ID: scraper-seed
+      RUNNING_IN_DOCKER: "1"
+    networks:
+      - swarm-net
+    restart: unless-stopped
+
+  # ── Email Seed (primary sender) ──────────────────────────────────────────────
+  email-seed:
+    image: the-swarm-node
+    container_name: swarm-email-seed
+    env_file: .env
+    environment:
+      NODE_TYPE: email_node
+      NODE_ID: email-seed
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL_1}
+      SENDGRID_FROM_NAME:  ${SENDGRID_FROM_NAME_1:-Swarm}
+      RUNNING_IN_DOCKER: "1"
+    networks:
+      - swarm-net
+    restart: unless-stopped
+    depends_on:
+      - scraper
+
+  # ── Analytics ────────────────────────────────────────────────────────────────
+  analytics:
+    image: the-swarm-node
+    container_name: swarm-analytics
+    env_file: .env
+    environment:
+      NODE_TYPE: analytics_node
+      NODE_ID: analytics-seed
+      RUNNING_IN_DOCKER: "1"
+    networks:
+      - swarm-net
+    restart: unless-stopped
+
+  # ── SEO (uncomment when you have WordPress + SerpAPI keys) ───────────────────
+  # seo:
+  #   image: the-swarm-node
+  #   container_name: swarm-seo
+  #   env_file: .env
+  #   environment:
+  #     NODE_TYPE: seo_node
+  #     NODE_ID: seo-seed
+  #     RUNNING_IN_DOCKER: "1"
+  #   networks:
+  #     - swarm-net
+  #   restart: unless-stopped
+
+  # ── Portainer (web UI at http://localhost:9000) ───────────────────────────────
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: swarm-portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - swarm-net
+    restart: unless-stopped

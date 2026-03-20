@@ -21,8 +21,9 @@ const nodeTypes = ['email_node', 'seo_node', 'scraper_node', 'analytics_node'];
 const nodeQueues = {};
 const taskDefs   = {};
 for (const t of nodeTypes) {
-  const qKey = `SWARM_${t.toUpperCase()}_QUEUE_URL`;
-  const dKey  = `SWARM_${t.toUpperCase()}_TASK_DEF`;
+  const short = t.replace('_node', '').toUpperCase();   // email_node → EMAIL
+  const qKey = `SWARM_${short}_QUEUE_URL`;
+  const dKey  = `SWARM_${short}_TASK_DEF`;
   if (process.env[qKey]) nodeQueues[t] = process.env[qKey];
   if (process.env[dKey]) taskDefs[t]   = process.env[dKey];
 }

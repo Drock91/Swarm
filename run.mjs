@@ -48,7 +48,7 @@ const envMap = {
   apollo_api_key:        'APOLLO_API_KEY',
   hunter_api_key:        'HUNTER_API_KEY',
   serp_api_key:          'SERPAPI_API_KEY',
-  queue_url:             `SWARM_${nodeType.toUpperCase()}_QUEUE_URL`,
+  queue_url:             `SWARM_${nodeType.replace('_node', '').toUpperCase()}_QUEUE_URL`,
   webhook_base_url:      'SWARM_WEBHOOK_BASE_URL',
 };
 for (const [key, envKey] of Object.entries(envMap)) {

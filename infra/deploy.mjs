@@ -36,6 +36,10 @@ import {
   CreateClusterCommand,
   DescribeClustersCommand,
 } from '@aws-sdk/client-ecs';
+import {
+  IAMClient,
+  CreateServiceLinkedRoleCommand,
+} from '@aws-sdk/client-iam';
 
 const REGION  = process.env.AWS_REGION ?? 'us-east-1';
 const ACCOUNT = process.env.AWS_ACCOUNT_ID;   // optional, for tagging
@@ -43,6 +47,7 @@ const DDB     = new DynamoDBClient({ region: REGION });
 const S3      = new S3Client({ region: REGION });
 const SQS     = new SQSClient({ region: REGION });
 const ECS     = new ECSClient({ region: REGION });
+const IAM     = new IAMClient({ region: REGION });
 
 // ------------------------------------------------------------------ //
 //  DynamoDB table definitions                                          //
@@ -129,9 +134,7 @@ const QUEUES = [
   'swarm-commander-queue',
   'swarm-email-queue',
   'swarm-seo-queue',
-  'swarm-dm-queue',
-  'swarm-voice-queue',
-  'swarm-content-queue',
+
   'swarm-scraper-queue',
   'swarm-analytics-queue',
 ];
@@ -195,20 +198,24 @@ async function ensureQueue(name) {
 }
 
 async function ensureEcsCluster(name) {
+  // Ensure the ECS service-linked role exists
+  try {
+    await IAM.send(new CreateServiceLinkedRoleCommand({
+      AWSServiceName: 'ecs.amazonaws.com',
+    }));
+    info('Created ECS service-linked role');
+  } catch (e) {
+    if (!e.message?.includes('has been taken') && !e.message?.includes('already exists')) throw e;
+    // role already exists – fine
+  }
+
   const desc = await ECS.send(new DescribeClustersCommand({ clusters: [name] }));
   const existing = desc.clusters?.find(c => c.clusterName === name && c.status !== 'INACTIVE');
   if (existing) {
     skip(`ECS cluster: ${name}`);
     return;
   }
-  await ECS.send(new CreateClusterCommand({
-    clusterName: name,
-    capacityProviders: ['FARGATE', 'FARGATE_SPOT'],
-    defaultCapacityProviderStrategy: [
-      { capacityProvider: 'FARGATE_SPOT', weight: 2, base: 0 },
-      { capacityProvider: 'FARGATE',      weight: 1, base: 1 },
-    ],
-  }));
+  await ECS.send(new CreateClusterCommand({ clusterName: name }));
   ok(`Created ECS cluster: ${name}`);
 }
 

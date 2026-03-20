@@ -22,7 +22,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const COMMANDER_SYSTEM_PROMPT = `
 You are the Commander Agent of an autonomous marketing swarm.
-You orchestrate multiple specialized nodes (email, SEO, DM, voice, content, scraper, analytics).
+You orchestrate multiple specialized nodes (email, SEO, scraper, analytics).
 
 Given current metrics, active campaigns, and node statuses, decide:
 1. Which campaigns to prioritize or pause

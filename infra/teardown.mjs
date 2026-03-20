@@ -43,7 +43,7 @@ const ECS    = new ECSClient({ region: REGION });
 
 const TABLES  = ['swarm-nodes','swarm-leads','swarm-campaigns','swarm-metrics','swarm-knowledge','swarm-calls','swarm-costs'];
 const BUCKETS = ['swarm-content-store','swarm-exports-store','swarm-models-store'];
-const QUEUES  = ['swarm-commander-queue','swarm-email-queue','swarm-seo-queue','swarm-dm-queue','swarm-voice-queue','swarm-content-queue','swarm-scraper-queue','swarm-analytics-queue'];
+const QUEUES  = ['swarm-commander-queue','swarm-email-queue','swarm-seo-queue','swarm-scraper-queue','swarm-analytics-queue'];
 const CLUSTER = 'swarm-cluster';
 
 function done(msg)  { console.log(`  🗑   ${msg}`); }

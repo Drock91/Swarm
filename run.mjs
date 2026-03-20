@@ -40,16 +40,13 @@ if (process.argv[3]) {
 
 // Inject env-based credentials if not already in config
 const envMap = {
-  sendgrid_api_key:      'SENDGRID_API_KEY',
   openai_api_key:        'OPENAI_API_KEY',
-  twilio_account_sid:    'TWILIO_ACCOUNT_SID',
-  twilio_auth_token:     'TWILIO_AUTH_TOKEN',
-  elevenlabs_api_key:    'ELEVENLABS_API_KEY',
-  x_bearer_token:        'X_BEARER_TOKEN',
-  linkedin_token:        'LINKEDIN_TOKEN',
+  from_email:            'SES_FROM_EMAIL',
+  from_name:             'SES_FROM_NAME',
+  reply_to:              'SES_REPLY_TO',
   apollo_api_key:        'APOLLO_API_KEY',
   hunter_api_key:        'HUNTER_API_KEY',
-  serp_api_key:          'SERP_API_KEY',
+  serp_api_key:          'SERPAPI_API_KEY',
   queue_url:             `SWARM_${nodeType.toUpperCase()}_QUEUE_URL`,
   webhook_base_url:      'SWARM_WEBHOOK_BASE_URL',
 };

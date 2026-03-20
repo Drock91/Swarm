@@ -237,9 +237,9 @@ export class CommanderAgent {
       `AWS_ACCESS_KEY_ID=${process.env.AWS_ACCESS_KEY_ID ?? ''}`,
       `AWS_SECRET_ACCESS_KEY=${process.env.AWS_SECRET_ACCESS_KEY ?? ''}`,
       `OPENAI_API_KEY=${process.env.OPENAI_API_KEY ?? ''}`,
-      `SENDGRID_API_KEY=${process.env.SENDGRID_API_KEY ?? ''}`,
-      `SENDGRID_FROM_NAME=${process.env.SENDGRID_FROM_NAME ?? ''}`,
-      `SENDGRID_FROM_EMAIL=${senderEmail ?? process.env.SENDGRID_FROM_EMAIL ?? ''}`,
+      `SES_FROM_NAME=${process.env.SES_FROM_NAME ?? ''}`,
+      `SES_FROM_EMAIL=${senderEmail ?? process.env.SES_FROM_EMAIL ?? ''}`,
+      `SES_REPLY_TO=${process.env.SES_REPLY_TO ?? ''}`,
       `NODE_CONFIG=${JSON.stringify(config)}`,
       `RUNNING_IN_DOCKER=1`,
       // Pass all SWARM_* queue URLs through

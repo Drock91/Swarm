@@ -3,14 +3,13 @@
  *
  * Capabilities:
  *   - Multi-step drip sequences (up to 7 follow-ups)
- *   - Open/click/reply tracking via SendGrid webhooks
  *   - Automated unsubscribe handling
  *   - Subject line A/B testing + self-improvement
  *   - Human reply detection (filters auto-replies)
- *   - Scales to millions of emails/month
+ *   - Sends via Amazon SES (no third-party email vendor needed)
  */
 
-import sgMail from '@sendgrid/mail';
+import { SESClient, SendEmailCommand } from '@aws-sdk/client-ses';
 import OpenAI from 'openai';
 import { BaseNode } from '../core/base_node.mjs';
 import { log } from '../core/logger.mjs';
@@ -29,13 +28,14 @@ export class EmailNode extends BaseNode {
   constructor(config, region = 'us-east-1', parentId = null) {
     super(config, region, parentId);
 
-    sgMail.setApiKey(config.sendgrid_api_key ?? '');
+    this.ses             = new SESClient({ region });
     this.openai          = new OpenAI();
-    this.fromEmail       = config.from_email  ?? 'outreach@example.com';
-    this.fromName        = config.from_name   ?? 'Team';
+    this.fromEmail       = config.from_email  ?? process.env.SES_FROM_EMAIL ?? 'derek@heinrichstech.com';
+    this.fromName        = config.from_name   ?? process.env.SES_FROM_NAME  ?? 'Derek';
+    this.replyToEmail    = config.reply_to     ?? this.fromEmail;
     this.sequenceSteps   = config.sequence_steps ?? 3;
     this.followUpDays    = config.follow_up_intervals ?? [2, 4, 7];
-    this.dailySendLimit  = config.daily_send_limit ?? 500;
+    this.dailySendLimit  = config.daily_send_limit ?? 200;  // SES sandbox default is 200/day
     this.subjectLines    = config.subject_lines ?? ['Quick question for you', 'Have you considered this?'];
     this.emailTemplates  = config.email_templates ?? [];
     this._sentToday      = 0;
@@ -127,13 +127,15 @@ export class EmailNode extends BaseNode {
     const html    = await this._generateEmailBody(lead, step);
 
     try {
-      await sgMail.send({
-        to:   lead.email,
-        from: { email: this.fromEmail, name: this.fromName },
-        subject,
-        html,
-        customArgs: { node_id: this.nodeId, lead_id: lead.lead_id, step: String(step) },
-      });
+      await this.ses.send(new SendEmailCommand({
+        Source:      `${this.fromName} <${this.fromEmail}>`,
+        Destination: { ToAddresses: [lead.email] },
+        ReplyToAddresses: [this.replyToEmail],
+        Message: {
+          Subject: { Data: subject, Charset: 'UTF-8' },
+          Body:    { Html: { Data: html, Charset: 'UTF-8' } },
+        },
+      }));
 
       const nextInterval = this.followUpDays[Math.min(step, this.followUpDays.length - 1)];
       await this.memory.upsertLead({

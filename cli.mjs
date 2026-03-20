@@ -163,9 +163,9 @@ async function cmdSpawn(args) {
     `AWS_ACCESS_KEY_ID=${process.env.AWS_ACCESS_KEY_ID ?? ''}`,
     `AWS_SECRET_ACCESS_KEY=${process.env.AWS_SECRET_ACCESS_KEY ?? ''}`,
     `OPENAI_API_KEY=${process.env.OPENAI_API_KEY ?? ''}`,
-    `SENDGRID_API_KEY=${process.env.SENDGRID_API_KEY ?? ''}`,
-    `SENDGRID_FROM_EMAIL=${args[1] ?? process.env.SENDGRID_FROM_EMAIL_1 ?? ''}`,
-    `SENDGRID_FROM_NAME=${process.env.SENDGRID_FROM_NAME_1 ?? ''}`,
+    `SES_FROM_EMAIL=${args[1] ?? process.env.SES_FROM_EMAIL_1 ?? ''}`,
+    `SES_FROM_NAME=${process.env.SES_FROM_NAME_1 ?? ''}`,
+    `SES_REPLY_TO=${process.env.SES_REPLY_TO ?? ''}`,
     ...Object.entries(process.env)
       .filter(([k]) => k.startsWith('SWARM_') && k.endsWith('_QUEUE_URL'))
       .map(([k, v]) => `${k}=${v}`),

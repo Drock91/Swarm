@@ -48,8 +48,8 @@ services:
     environment:
       NODE_TYPE: email_node
       NODE_ID: email-seed
-      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL_1}
-      SENDGRID_FROM_NAME:  ${SENDGRID_FROM_NAME_1:-Swarm}
+      SES_FROM_EMAIL: ${SES_FROM_EMAIL_1}
+      SES_FROM_NAME:  ${SES_FROM_NAME_1:-Derek}
       RUNNING_IN_DOCKER: "1"
     networks:
       - swarm-net

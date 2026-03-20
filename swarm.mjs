@@ -17,7 +17,7 @@ import { loadProfile, bootstrapGoals } from './core/profile.mjs';
 const region = process.env.AWS_REGION ?? 'us-east-1';
 
 // Build node_queues map from env vars
-const nodeTypes = ['email_node', 'seo_node', 'dm_node', 'voice_node', 'content_node', 'scraper_node', 'analytics_node'];
+const nodeTypes = ['email_node', 'seo_node', 'scraper_node', 'analytics_node'];
 const nodeQueues = {};
 const taskDefs   = {};
 for (const t of nodeTypes) {

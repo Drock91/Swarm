@@ -12,10 +12,8 @@ cdk.out/
 
 # Environment & Secrets
 .env
-.env.*
-*.env
-secrets.yaml
-secrets.json
+.env.local
+.env.production
 *.pem
 *.key
 
@@ -53,3 +51,4 @@ desktop.ini
 .vscode/settings.json
 .idea/
 *.swp
+nul

@@ -2,12 +2,13 @@
  * ScraperNode — Feeds fresh leads into all other swarm nodes.
  *
  * Capabilities:
- *   - Multi-source scraping: LinkedIn, Apollo.io, Hunter.io, Reddit, directories
- *   - Enrichment: finds email, phone, LinkedIn URL from company domain
+ *   - Hunter Discover: finds companies by location, industry, headcount (FREE)
+ *   - Hunter Domain Search: extracts verified emails from company domains
+ *   - Apollo.io (paid plans): bulk people search by title/industry/location
+ *   - Reddit: finds pain-point signals from relevant subreddits
  *   - Deduplication before writing to SharedMemory
  *   - Pushes leads into the unified lead database
- *   - Configurable targeting filters (industry, title, company size)
- *   - Unlimited lead pipeline with rotating sources
+ *   - Configurable targeting filters (industry, title, company size, location)
  */
 
 import axios from 'axios';
@@ -32,7 +33,15 @@ export class ScraperNode extends BaseNode {
     this.minCompanySize  = config.min_company_size ?? 1;
     this.maxCompanySize  = config.max_company_size ?? 500;
     this.leadsPerCycle   = config.leads_per_cycle ?? 50;
-    this.sources         = config.sources ?? ['apollo', 'hunter', 'reddit'];
+    this.sources         = config.sources ?? ['hunter_discover', 'apollo', 'reddit'];
+
+    // Hunter Discover params (mapped from profile ICP)
+    this.hunterIndustries = config.hunter_industries ?? [];
+    this.hunterHeadcount  = config.hunter_headcount  ?? ['1-10', '11-50'];
+    this.hunterLocations  = config.hunter_locations   ?? [];      // [{ country, state, city }]
+
+    // Track which domains we've already searched (to avoid burning search credits)
+    this._searchedDomains = new Set();
   }
 
   async runCycle() {
@@ -59,10 +68,11 @@ export class ScraperNode extends BaseNode {
       try {
         let leads = [];
         switch (source) {
-          case 'apollo':   leads = await this._scrapeApollo();   break;
-          case 'hunter':   leads = await this._scrapeHunter();   break;
-          case 'reddit':   leads = await this._scrapeReddit();   break;
-          case 'linkedin': leads = await this._scrapeLinkedIn(); break;
+          case 'hunter_discover': leads = await this._hunterDiscover(); break;
+          case 'apollo':          leads = await this._scrapeApollo();   break;
+          case 'hunter':          leads = await this._scrapeHunter();   break;
+          case 'reddit':          leads = await this._scrapeReddit();   break;
+          case 'linkedin':        leads = await this._scrapeLinkedIn(); break;
         }
         freshLeads.push(...leads);
         log.debug({ event: 'source_scraped', source, found: leads.length });
@@ -91,42 +101,140 @@ export class ScraperNode extends BaseNode {
   //  SCRAPERS PER SOURCE                                                 //
   // ------------------------------------------------------------------ //
 
-  async _scrapeApollo() {
-    if (!this.apolloApiKey) return [];
+  /**
+   * Hunter Discover → Domain Search pipeline (primary, FREE discover calls).
+   * 1. Discover: finds company domains by location + industry + headcount
+   * 2. Domain Search: extracts personal emails from those domains (1 credit each)
+   */
+  async _hunterDiscover() {
+    if (!this.hunterApiKey) return [];
+
+    // Build location filters from profile ICP locations
+    const locations = this.hunterLocations.length > 0
+      ? this.hunterLocations
+      : this.targetLocations.map(loc => {
+          // Parse "City, State" or "State" from profile target_locations
+          const parts = loc.split(',').map(s => s.trim());
+          if (parts.length >= 2) return { country: 'US', state: this._stateCode(parts[1]), city: parts[0] };
+          if (parts[0] === 'United States') return { country: 'US' };
+          return { country: 'US', state: this._stateCode(parts[0]) };
+        });
+
+    const body = {
+      headcount: this.hunterHeadcount,
+    };
+    if (locations.length) body.headquarters_location = { include: locations };
+    if (this.hunterIndustries.length) body.industry = { include: this.hunterIndustries };
+
     const resp = await axios.post(
-      'https://api.apollo.io/v1/mixed_people/search',
-      {
-        api_key:          this.apolloApiKey,
-        person_titles:    this.targetTitles,
-        organization_num_employees_ranges: [
-          `${this.minCompanySize},${this.maxCompanySize}`,
-        ],
-        q_organization_industries: this.targetIndustries,
-        per_page: Math.min(this.leadsPerCycle, 100),
-      },
-      { timeout: 20_000 },
+      `https://api.hunter.io/v2/discover?api_key=${this.hunterApiKey}`,
+      body,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 20_000 },
     );
 
-    return (resp.data.people ?? []).map(p => ({
-      name:         `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim(),
-      email:        p.email,
-      phone:        p.phone_numbers?.[0]?.sanitized_number,
-      title:        p.title,
-      company:      p.organization?.name,
-      linkedin_url: p.linkedin_url,
-      industry:     p.organization?.industry,
-      location:     p.city,
-    }));
+    const companies = resp.data?.data ?? [];
+    // Only process companies that have personal emails and we haven't searched yet
+    const targets = companies
+      .filter(c => (c.emails_count?.personal ?? 0) > 0 && !this._searchedDomains.has(c.domain))
+      .slice(0, Math.min(10, this.leadsPerCycle));   // Cap domain searches per cycle (10 credits max)
+
+    const leads = [];
+    for (const co of targets) {
+      this._searchedDomains.add(co.domain);
+      try {
+        const dsResp = await axios.get('https://api.hunter.io/v2/domain-search', {
+          params: {
+            domain:   co.domain,
+            api_key:  this.hunterApiKey,
+            limit:    10,
+            type:     'personal',
+            seniority: 'executive,senior',
+          },
+          timeout: 10_000,
+        });
+        for (const e of dsResp.data?.data?.emails ?? []) {
+          if (!e.value) continue;
+          leads.push({
+            email:      e.value,
+            name:       ((e.first_name ?? '') + ' ' + (e.last_name ?? '')).trim() || null,
+            title:      e.position ?? null,
+            company:    co.organization ?? null,
+            website:    co.domain,
+            industry:   null,
+            location:   null,
+            confidence: e.confidence,
+            verified:   e.verification?.status ?? null,
+            source:     'hunter_discover',
+            linkedin_url: e.linkedin ?? null,
+            phone:      e.phone_number ?? null,
+          });
+        }
+        await sleep(300);   // respect Hunter rate limits
+      } catch (err) {
+        log.warn({ event: 'hunter_domain_search_error', domain: co.domain, error: err.message });
+      }
+    }
+
+    log.info({ event: 'hunter_discover_complete', companies_found: companies.length, domains_searched: targets.length, leads_extracted: leads.length });
+    return leads;
+  }
+
+  /**
+   * Apollo.io people search (requires paid plan for API access).
+   * Key must go in X-Api-Key header (not body).
+   */
+  async _scrapeApollo() {
+    if (!this.apolloApiKey) return [];
+    try {
+      const resp = await axios.post(
+        'https://api.apollo.io/v1/mixed_people/search',
+        {
+          person_titles:    this.targetTitles,
+          person_locations: this.targetLocations,
+          organization_num_employees_ranges: [
+            `${this.minCompanySize},${this.maxCompanySize}`,
+          ],
+          q_organization_industries: this.targetIndustries,
+          per_page: Math.min(this.leadsPerCycle, 100),
+        },
+        {
+          timeout: 20_000,
+          headers: {
+            'X-Api-Key':    this.apolloApiKey,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      return (resp.data.people ?? []).map(p => ({
+        name:         `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim(),
+        email:        p.email,
+        phone:        p.phone_numbers?.[0]?.sanitized_number,
+        title:        p.title,
+        company:      p.organization?.name,
+        linkedin_url: p.linkedin_url,
+        industry:     p.organization?.industry,
+        location:     p.city,
+        source:       'apollo',
+      }));
+    } catch (err) {
+      // Apollo free plan blocks API — log and move on
+      if (err.response?.status === 403) {
+        log.info({ event: 'apollo_api_blocked', reason: 'Free plan — API not accessible. Upgrade or rely on Hunter.' });
+        return [];
+      }
+      throw err;
+    }
   }
 
   async _scrapeHunter() {
-    if (!this.hunterApiKey || !this.targetIndustries.length) return [];
-    // Hunter domain search for a target company domain
+    if (!this.hunterApiKey) return [];
+    // Legacy single-domain search (used if a specific target_domain is set)
     const domain = this.config.target_domain;
     if (!domain) return [];
 
     const resp = await axios.get('https://api.hunter.io/v2/domain-search', {
-      params: { domain, api_key: this.hunterApiKey, limit: 20 },
+      params: { domain, api_key: this.hunterApiKey, limit: 20, type: 'personal' },
       timeout: 10_000,
     });
 
@@ -188,6 +296,31 @@ export class ScraperNode extends BaseNode {
       log.warn({ event: 'linkedin_scrape_warn', error: err.message });
       return [];
     }
+  }
+
+  // ------------------------------------------------------------------ //
+  //  HELPERS                                                              //
+  // ------------------------------------------------------------------ //
+
+  /** Convert state name or abbreviation to 2-letter state code for Hunter API */
+  _stateCode(input) {
+    if (!input) return undefined;
+    const s = input.trim();
+    if (s.length === 2) return s.toUpperCase();
+    const map = {
+      'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA',
+      'colorado':'CO','connecticut':'CT','delaware':'DE','florida':'FL','georgia':'GA',
+      'hawaii':'HI','idaho':'ID','illinois':'IL','indiana':'IN','iowa':'IA',
+      'kansas':'KS','kentucky':'KY','louisiana':'LA','maine':'ME','maryland':'MD',
+      'massachusetts':'MA','michigan':'MI','minnesota':'MN','mississippi':'MS',
+      'missouri':'MO','montana':'MT','nebraska':'NE','nevada':'NV','new hampshire':'NH',
+      'new jersey':'NJ','new mexico':'NM','new york':'NY','north carolina':'NC',
+      'north dakota':'ND','ohio':'OH','oklahoma':'OK','oregon':'OR','pennsylvania':'PA',
+      'rhode island':'RI','south carolina':'SC','south dakota':'SD','tennessee':'TN',
+      'texas':'TX','utah':'UT','vermont':'VT','virginia':'VA','washington':'WA',
+      'west virginia':'WV','wisconsin':'WI','wyoming':'WY',
+    };
+    return map[s.toLowerCase()] ?? s.toUpperCase().slice(0, 2);
   }
 
   // ------------------------------------------------------------------ //

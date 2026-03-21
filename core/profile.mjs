@@ -85,6 +85,64 @@ export function emailNodeConfig(profile) {
 export function scraperNodeConfig(profile) {
   if (!profile) return {};
   const { icp, business } = profile;
+
+  // Map profile industries to Hunter.io industry names where possible
+  const hunterIndustryMap = {
+    'dental offices':       'Dentists',
+    'dental':               'Dentists',
+    'dentists':             'Dentists',
+    'real estate':          'Real Estate',
+    'real estate agencies': 'Real Estate',
+    'law firms':            'Law Practice',
+    'legal':                'Law Practice',
+    'accounting':           'Accounting',
+    'restaurants':          'Restaurants',
+    'fitness':              'Health, Wellness and Fitness',
+    'gyms':                 'Health, Wellness and Fitness',
+    'medical':              'Medical Practices',
+    'medical clinics':      'Medical Practices',
+    'veterinary':           'Veterinary Services',
+    'veterinary clinics':   'Veterinary Services',
+    'plumbing':             'Plumbing, Heating, and Air-Conditioning Contractors',
+    'hvac':                 'Plumbing, Heating, and Air-Conditioning Contractors',
+    'auto repair':          'Automotive',
+    'auto repair shops':    'Automotive',
+    'insurance':            'Insurance',
+    'insurance agencies':   'Insurance',
+    'chiropractic':         'Alternative Medicine',
+    'chiropractic offices': 'Alternative Medicine',
+    'financial advisors':   'Financial Services',
+    'financial':            'Financial Services',
+  };
+
+  // US state abbreviation lookup
+  const stateAbbr = {
+    'AL':'AL','AK':'AK','AZ':'AZ','AR':'AR','CA':'CA','CO':'CO','CT':'CT','DE':'DE',
+    'FL':'FL','GA':'GA','HI':'HI','ID':'ID','IL':'IL','IN':'IN','IA':'IA','KS':'KS',
+    'KY':'KY','LA':'LA','ME':'ME','MD':'MD','MA':'MA','MI':'MI','MN':'MN','MS':'MS',
+    'MO':'MO','MT':'MT','NE':'NE','NV':'NV','NH':'NH','NJ':'NJ','NM':'NM','NY':'NY',
+    'NC':'NC','ND':'ND','OH':'OH','OK':'OK','OR':'OR','PA':'PA','RI':'RI','SC':'SC',
+    'SD':'SD','TN':'TN','TX':'TX','UT':'UT','VT':'VT','VA':'VA','WA':'WA','WV':'WV',
+    'WI':'WI','WY':'WY',
+  };
+
+  const profileIndustries = icp?.industries ?? [];
+  const hunterIndustries  = profileIndustries
+    .map(i => hunterIndustryMap[i.toLowerCase()] ?? null)
+    .filter(Boolean);
+
+  // Parse locations into Hunter format: [{ country, state, city }]
+  const hunterLocations = (icp?.locations ?? [])
+    .filter(l => l !== 'United States')
+    .map(loc => {
+      const parts = loc.split(',').map(s => s.trim());
+      if (parts.length >= 2) {
+        const st = stateAbbr[parts[1].toUpperCase()] ?? parts[1];
+        return { country: 'US', state: st, city: parts[0] };
+      }
+      return { country: 'US' };
+    });
+
   return {
     target_job_titles:       icp?.job_titles          ?? [],
     target_industries:       icp?.industries          ?? [],
@@ -94,8 +152,11 @@ export function scraperNodeConfig(profile) {
     exclude_keywords:        icp?.exclude_keywords    ?? [],
     has_website:             icp?.has_website         ?? true,
     icp_description:         icp?.description         ?? '',
-    // Tag leads with the business they're being scraped for
     source_business:         business?.name           ?? '',
+    // Hunter Discover-specific config
+    hunter_industries:       hunterIndustries,
+    hunter_locations:        hunterLocations,
+    hunter_headcount:        ['1-10', '11-50'],
   };
 }
 

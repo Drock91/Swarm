@@ -300,19 +300,23 @@ export class ScraperNode extends BaseNode {
               }
 
               const leadBase = {
-                name:         siteData.ownerName,
-                title:        null,
-                company:      siteData.siteName || site.title || null,
-                website:      site.domain,
-                phone:        siteData.phone,
+                name:               siteData.ownerName,
+                title:              null,
+                company:            siteData.siteName || site.title || null,
+                website:            site.domain,
+                phone:              siteData.phone,
                 industry,
-                location:     loc,
-                has_chatbot:  false,
-                site_tagline: siteData.tagline || null,
-                confidence:   null,
-                verified:     null,
-                source:       'web_scrape',
-                linkedin_url: null,
+                location:           loc,
+                has_chatbot:        false,
+                site_tagline:       siteData.tagline || null,
+                business_hours:     siteData.businessHours     || null,
+                has_after_hours_gap: siteData.hasAfterHoursGap ?? true,
+                has_contact_form:   siteData.hasContactForm    ?? false,
+                site_platform:      siteData.sitePlatform      || 'custom',
+                confidence:         null,
+                verified:           null,
+                source:             'web_scrape',
+                linkedin_url:       null,
               };
 
               // Cap at 2 emails per domain — prevents news/directory sites from
@@ -468,13 +472,17 @@ export class ScraperNode extends BaseNode {
     const page = await browser.newPage();
 
     const result = {
-      emails:      [],
-      phone:       null,
-      ownerName:   null,
-      hasChatbot:  false,
-      chatbotName: null,
-      tagline:     null,
-      siteName:    null,
+      emails:           [],
+      phone:            null,
+      ownerName:        null,
+      hasChatbot:       false,
+      chatbotName:      null,
+      tagline:          null,
+      siteName:         null,
+      businessHours:    null,
+      hasAfterHoursGap: true,
+      hasContactForm:   false,
+      sitePlatform:     'custom',
     };
 
     try {
@@ -618,40 +626,80 @@ export class ScraperNode extends BaseNode {
         }
       }
 
-      // --- Owner / key person name (best-effort) ---
+      // --- Owner / key person name ---
       let ownerName = null;
       const ownerPatterns = [
-        /(?:owner|founder|ceo|president|principal|dr\.?|dds|dmd)[:\s,]+([A-Z][a-z]+ [A-Z][a-z]+)/i,
-        /([A-Z][a-z]+ [A-Z][a-z]+)[,\s]+(?:owner|founder|ceo|president|dds|dmd)/i,
+        /(?:owner|founder|ceo|president|principal|dr\.?|dds|dmd|pa-c|np|attorney|realtor|broker)[:\s,]+([A-Z][a-z]+(?:\s[A-Z]\.?)?\s[A-Z][a-z]+)/i,
+        /([A-Z][a-z]+(?:\s[A-Z]\.?)?\s[A-Z][a-z]+)[,\s]+(?:owner|founder|ceo|president|dds|dmd|attorney|realtor|broker)/i,
+        /(?:meet\s+(?:dr\.?\s+)?|about\s+(?:dr\.?\s+)?|hi,?\s+i(?:'m| am)\s+)([A-Z][a-z]+ [A-Z][a-z]+)/i,
+        /(?:^|\n)([A-Z][a-z]+ [A-Z][a-z]+)\s*\n\s*(?:owner|founder|ceo|dds|dmd|attorney)/im,
       ];
       for (const pat of ownerPatterns) {
         const match = bodyText.match(pat);
         if (match) { ownerName = match[1].trim(); break; }
       }
+      if (!ownerName) {
+        const headings = [...document.querySelectorAll('h1, h2')]
+          .map(h => h.innerText?.trim()).filter(Boolean);
+        for (const h of headings) {
+          const m = h.match(/^(?:dr\.?\s+)?([A-Z][a-z]+ [A-Z][a-z]+)(?:,\s*(?:dds|dmd|pa|np|esq|cpa|attorney|owner))?$/i);
+          if (m) { ownerName = m[1].trim(); break; }
+        }
+      }
 
-      // --- Site tagline / meta description (used for email personalization) ---
+      // --- Business hours ---
+      let businessHours = null;
+      let hasAfterHoursGap = true;
+      const hoursMatch = bodyText.match(
+        /(?:hours?|open)[:\s]*([^\n]{5,80}(?:am|pm|closed)[^\n]{0,60})/i
+      );
+      if (hoursMatch) {
+        businessHours = hoursMatch[1].trim().slice(0, 120);
+        const h = businessHours.toLowerCase();
+        hasAfterHoursGap = !(/sat|sun/.test(h)) || !(/[6-9]\s*pm|10\s*pm|11\s*pm/.test(h));
+      }
+
+      // --- Contact form + platform ---
+      const hasContactForm = !!document.querySelector(
+        'form[action], form[id*="contact"], form[class*="contact"], form[id*="inquiry"], form[class*="inquiry"]'
+      );
+      let sitePlatform = 'custom';
+      if (html.includes('wp-content') || html.includes('wordpress')) sitePlatform = 'wordpress';
+      else if (html.includes('wix.com') || html.includes('wixsite')) sitePlatform = 'wix';
+      else if (html.includes('squarespace')) sitePlatform = 'squarespace';
+      else if (html.includes('shopify')) sitePlatform = 'shopify';
+      else if (html.includes('webflow')) sitePlatform = 'webflow';
+      else if (html.includes('godaddy')) sitePlatform = 'godaddy';
+
+      // --- Meta ---
       const metaDesc = document.querySelector('meta[name="description"]')?.getAttribute('content')
         ?? document.querySelector('meta[property="og:description"]')?.getAttribute('content')
         ?? null;
       const siteName = document.querySelector('meta[property="og:site_name"]')?.getAttribute('content')
-        ?? document.title
-        ?? null;
+        ?? document.title ?? null;
       const tagline = (metaDesc ?? '').slice(0, 200).trim() || null;
 
-      return { emails, phone, hasChatbot, chatbotName, ownerName, tagline, siteName };
+      return {
+        emails, phone, hasChatbot, chatbotName, ownerName, tagline, siteName,
+        businessHours, hasAfterHoursGap, hasContactForm, sitePlatform,
+      };
     }, CHATBOT_SIGNATURES);
   }
 
   /** Merge page data into running result, keeping best values */
   _mergePageData(existing, pageData) {
     return {
-      emails:      [...(existing.emails || []), ...(pageData.emails || [])],
-      phone:       existing.phone || pageData.phone,
-      ownerName:   existing.ownerName || pageData.ownerName,
-      hasChatbot:  existing.hasChatbot || pageData.hasChatbot,
-      chatbotName: existing.chatbotName || pageData.chatbotName,
-      tagline:     existing.tagline || pageData.tagline || null,
-      siteName:    existing.siteName || pageData.siteName || null,
+      emails:           [...(existing.emails || []), ...(pageData.emails || [])],
+      phone:            existing.phone            || pageData.phone,
+      ownerName:        existing.ownerName        || pageData.ownerName,
+      hasChatbot:       existing.hasChatbot       || pageData.hasChatbot,
+      chatbotName:      existing.chatbotName      || pageData.chatbotName,
+      tagline:          existing.tagline          || pageData.tagline          || null,
+      siteName:         existing.siteName         || pageData.siteName         || null,
+      businessHours:    existing.businessHours    || pageData.businessHours    || null,
+      hasAfterHoursGap: existing.hasAfterHoursGap ?? pageData.hasAfterHoursGap ?? true,
+      hasContactForm:   existing.hasContactForm   ?? pageData.hasContactForm   ?? false,
+      sitePlatform:     existing.sitePlatform     || pageData.sitePlatform     || 'custom',
     };
   }
 
@@ -756,7 +804,7 @@ export class ScraperNode extends BaseNode {
             if (FRANCHISE_BRANDS.some(b => listingLower.includes(b))) continue;
 
             // Scrape the actual business site for email + tagline
-            let siteData = { emails: [], phone: listing.phone, ownerName: null, tagline: null, siteName: listing.name, hasChatbot: false };
+            let siteData = { emails: [], phone: listing.phone, ownerName: null, tagline: null, siteName: listing.name, hasChatbot: false, businessHours: null, hasAfterHoursGap: true, hasContactForm: false, sitePlatform: 'custom' };
             try {
               siteData = await this._scrapeWebsite(listing.website);
               siteData.phone    = siteData.phone    ?? listing.phone;
@@ -776,12 +824,16 @@ export class ScraperNode extends BaseNode {
               phone:        siteData.phone ?? listing.phone,
               industry,
               location:     loc,
-              has_chatbot:  false,
-              site_tagline: siteData.tagline ?? null,
-              confidence:   null,
-              verified:     null,
-              source:       'yellowpages',
-              linkedin_url: null,
+              has_chatbot:         false,
+              site_tagline:        siteData.tagline         ?? null,
+              business_hours:      siteData.businessHours   ?? null,
+              has_after_hours_gap: siteData.hasAfterHoursGap ?? true,
+              has_contact_form:    siteData.hasContactForm   ?? false,
+              site_platform:       siteData.sitePlatform     || 'custom',
+              confidence:          null,
+              verified:            null,
+              source:              'yellowpages',
+              linkedin_url:        null,
             };
 
             if (siteData.emails.length > 0) {

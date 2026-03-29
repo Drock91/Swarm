@@ -641,29 +641,37 @@ export class FreeScraperNode extends BaseNode {
     this._scrapedDomains.add(cleanDomain);
 
     const base = {
-      email:       null,
-      phone:       null,
-      name:        null,
-      title:       null,
-      company:     null,
-      website:     domain,
+      email:               null,
+      phone:               null,
+      name:                null,
+      title:               null,
+      company:             null,
+      website:             domain,
       industry,
       location,
-      has_chatbot: false,
-      site_tagline: null,
-      confidence:  null,
-      verified:    null,
-      linkedin_url: null,
-      source:      'free_scraper',
+      has_chatbot:         false,
+      site_tagline:        null,
+      business_hours:      null,
+      has_after_hours_gap: true,
+      has_contact_form:    false,
+      site_platform:       'custom',
+      confidence:          null,
+      verified:            null,
+      linkedin_url:        null,
+      source:              'free_scraper',
     };
 
     // ── Layer 1: Deep website scrape ────────────────────────────────────────
     const site = await this._deepScrapeWebsite(url, domain, industry);
-    base.phone     = site.phone;
-    base.name      = site.ownerName;
-    base.company   = site.siteName;
-    base.has_chatbot = site.hasChatbot;
-    base.site_tagline = site.tagline;
+    base.phone               = site.phone;
+    base.name                = site.ownerName;
+    base.company             = site.siteName;
+    base.has_chatbot         = site.hasChatbot;
+    base.site_tagline        = site.tagline;
+    base.business_hours      = site.businessHours;
+    base.has_after_hours_gap = site.hasAfterHoursGap;
+    base.has_contact_form    = site.hasContactForm;
+    base.site_platform       = site.sitePlatform;
 
     if (site.hasChatbot) {
       this.increment('chatbots_found');
@@ -699,6 +707,7 @@ export class FreeScraperNode extends BaseNode {
     const result = {
       emails: [], phone: null, ownerName: null,
       hasChatbot: false, chatbotName: null, tagline: null, siteName: null,
+      businessHours: null, hasAfterHoursGap: true, hasContactForm: false, sitePlatform: 'custom',
     };
 
     const browser = await this._ensureBrowser();
@@ -834,17 +843,60 @@ export class FreeScraperNode extends BaseNode {
         }
       }
 
-      // Owner name
+      // Owner name — wider pattern set for better first-name hit rate
       let ownerName = null;
       const ownerPats = [
-        /(?:owner|founder|ceo|president|principal|dr\.?|dds|dmd|pa-c|np)[:\s,]+([A-Z][a-z]+ [A-Z][a-z]+)/i,
-        /([A-Z][a-z]+ [A-Z][a-z]+)[,\s]+(?:owner|founder|ceo|president|dds|dmd|attorney)/i,
-        /(?:meet\s+(?:dr\.?\s+)?|about\s+(?:dr\.?\s+)?)([A-Z][a-z]+ [A-Z][a-z]+)/i,
+        /(?:owner|founder|ceo|president|principal|dr\.?|dds|dmd|pa-c|np|attorney|realtor|broker)[:\s,]+([A-Z][a-z]+(?:\s[A-Z]\.?)?\s[A-Z][a-z]+)/i,
+        /([A-Z][a-z]+(?:\s[A-Z]\.?)?\s[A-Z][a-z]+)[,\s]+(?:owner|founder|ceo|president|dds|dmd|attorney|realtor|broker)/i,
+        /(?:meet\s+(?:dr\.?\s+)?|about\s+(?:dr\.?\s+)?|hi,?\s+i(?:'m| am)\s+)([A-Z][a-z]+ [A-Z][a-z]+)/i,
+        /(?:^|\n)([A-Z][a-z]+ [A-Z][a-z]+)\s*\n\s*(?:owner|founder|ceo|dds|dmd|attorney)/im,
       ];
       for (const pat of ownerPats) {
         const m = bodyText.match(pat);
         if (m) { ownerName = m[1].trim(); break; }
       }
+      // Fallback: first H1/H2 that looks like "Dr. Jane Smith" or "Jane Smith, DDS"
+      if (!ownerName) {
+        const headings = [...document.querySelectorAll('h1, h2')]
+          .map(h => h.innerText?.trim())
+          .filter(Boolean);
+        for (const h of headings) {
+          const m = h.match(/^(?:dr\.?\s+)?([A-Z][a-z]+ [A-Z][a-z]+)(?:,\s*(?:dds|dmd|pa|np|esq|cpa|attorney|owner))?$/i);
+          if (m) { ownerName = m[1].trim(); break; }
+        }
+      }
+
+      // Business hours — detect "Mon-Fri 9am-5pm" style text, flag closed hours
+      let businessHours = null;
+      let hasAfterHoursGap = false;
+      const hoursMatch = bodyText.match(
+        /(?:hours?|open)[:\s]*([^\n]{5,80}(?:am|pm|closed)[^\n]{0,60})/i
+      );
+      if (hoursMatch) {
+        businessHours = hoursMatch[1].trim().slice(0, 120);
+        // If hours text lacks weekend or evening coverage, flag the gap
+        const h = businessHours.toLowerCase();
+        const hasWeekend = /sat|sun/.test(h);
+        const hasEvening = /[6-9]\s*pm|10\s*pm|11\s*pm|midnight/.test(h);
+        hasAfterHoursGap = !hasWeekend || !hasEvening;
+      } else {
+        // No hours listed at all — likely missing after-hours coverage
+        hasAfterHoursGap = true;
+      }
+
+      // Contact form detection
+      const hasContactForm = !!document.querySelector(
+        'form[action], form[id*="contact"], form[class*="contact"], form[id*="inquiry"], form[class*="inquiry"]'
+      );
+
+      // Website platform fingerprint
+      let sitePlatform = 'custom';
+      if (html.includes('wp-content') || html.includes('wordpress')) sitePlatform = 'wordpress';
+      else if (html.includes('wix.com') || html.includes('wixsite')) sitePlatform = 'wix';
+      else if (html.includes('squarespace')) sitePlatform = 'squarespace';
+      else if (html.includes('shopify')) sitePlatform = 'shopify';
+      else if (html.includes('webflow')) sitePlatform = 'webflow';
+      else if (html.includes('godaddy')) sitePlatform = 'godaddy';
 
       const metaDesc = document.querySelector('meta[name="description"]')?.getAttribute('content')
                     ?? document.querySelector('meta[property="og:description"]')?.getAttribute('content')
@@ -852,19 +904,26 @@ export class FreeScraperNode extends BaseNode {
       const siteName = document.querySelector('meta[property="og:site_name"]')?.getAttribute('content')
                     ?? document.title ?? null;
 
-      return { emails, phone, hasChatbot, chatbotName, ownerName,
-               tagline: (metaDesc ?? '').slice(0, 200).trim() || null, siteName };
+      return {
+        emails, phone, hasChatbot, chatbotName, ownerName, siteName,
+        tagline: (metaDesc ?? '').slice(0, 200).trim() || null,
+        businessHours, hasAfterHoursGap, hasContactForm, sitePlatform,
+      };
     }, CHATBOT_SIGNATURES);
   }
 
   _mergeInto(target, src) {
-    target.emails      = [...target.emails, ...(src.emails ?? [])];
-    target.phone       = target.phone      || src.phone;
-    target.ownerName   = target.ownerName  || src.ownerName;
-    target.hasChatbot  = target.hasChatbot || src.hasChatbot;
-    target.chatbotName = target.chatbotName|| src.chatbotName;
-    target.tagline     = target.tagline    || src.tagline;
-    target.siteName    = target.siteName   || src.siteName;
+    target.emails            = [...target.emails, ...(src.emails ?? [])];
+    target.phone             = target.phone             || src.phone;
+    target.ownerName         = target.ownerName         || src.ownerName;
+    target.hasChatbot        = target.hasChatbot        || src.hasChatbot;
+    target.chatbotName       = target.chatbotName       || src.chatbotName;
+    target.tagline           = target.tagline           || src.tagline;
+    target.siteName          = target.siteName          || src.siteName;
+    target.businessHours     = target.businessHours     || src.businessHours;
+    target.hasAfterHoursGap  = target.hasAfterHoursGap  ?? src.hasAfterHoursGap;
+    target.hasContactForm    = target.hasContactForm     ?? src.hasContactForm;
+    target.sitePlatform      = target.sitePlatform      || src.sitePlatform;
   }
 
   // ── Layer 2: RDAP/WHOIS ───────────────────────────────────────────────────

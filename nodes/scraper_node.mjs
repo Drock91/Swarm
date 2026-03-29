@@ -253,9 +253,9 @@ export class ScraperNode extends BaseNode {
                 continue; // Skip — they already have a chat solution
               }
 
-              // Extract whatever contact info we found
-              if (siteData.emails.length === 0 && !siteData.phone) {
-                log.debug({ event: 'no_contact_info', domain: site.domain });
+              // Require email — phone-only leads are not stored
+              if (siteData.emails.length === 0) {
+                log.debug({ event: 'no_email', domain: site.domain });
                 continue;
               }
 
@@ -325,10 +325,6 @@ export class ScraperNode extends BaseNode {
                 cityLeads.push({ ...leadBase, email });
               }
 
-              // If we found a phone but no email, still store it
-              if (siteData.emails.length === 0 && siteData.phone) {
-                cityLeads.push({ ...leadBase, email: null });
-              }
             } catch (err) {
               log.debug({ event: 'site_scrape_error', domain: site.domain, error: err.message });
             }
@@ -518,7 +514,7 @@ export class ScraperNode extends BaseNode {
       // Try /contact page for more emails/phone
       const contactUrl = new URL(url);
       for (const path of ['/contact', '/contact-us', '/about', '/about-us']) {
-        if (result.emails.length > 0 && result.phone) break; // already have what we need
+        if (result.emails.length > 0) break; // have email, done
         try {
           contactUrl.pathname = path;
           await page.goto(contactUrl.href, { waitUntil: 'domcontentloaded', timeout: 10_000 });

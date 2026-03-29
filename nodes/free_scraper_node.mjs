@@ -13,7 +13,7 @@
  *   3. Pattern generation + MX record validation
  *
  * Quality gates (drops a lead if it fails any):
- *   - Must have email OR phone
+ *   - Must have email (phone-only leads are discarded)
  *   - Domain must not be a national chain / directory / franchise
  *   - Site must not already have a chatbot
  *   - Domain must not be .gov / .edu / .mil
@@ -314,7 +314,7 @@ export class FreeScraperNode extends BaseNode {
   // ── Quality gate ──────────────────────────────────────────────────────────
 
   _passesQualityGate(lead) {
-    if (!lead.email && !lead.phone) return false;
+    if (!lead.email) return false;
     if (!lead.website && !lead.company) return false;
     if (lead.has_chatbot) return false;
     // Reject if company name contains franchise keywords
@@ -958,13 +958,6 @@ export class FreeScraperNode extends BaseNode {
       return lead;
     }
 
-    // Keep phone-only leads — still reachable by the sales team
-    if (base.phone) {
-      const lead = { ...base, confidence: 'phone_only' };
-      lead.lead_score = this._scoreLead(lead);
-      return lead;
-    }
-
     return null;
   }
 
@@ -1022,7 +1015,7 @@ export class FreeScraperNode extends BaseNode {
       const allPaths = [...new Set([...generic, ...specific])];
 
       for (const path of allPaths) {
-        if (result.emails.length >= 2 && result.phone && result.ownerName) break;
+        if (result.emails.length >= 2 && result.ownerName) break;
         try {
           await page.goto(`${basePath}${path}`, { waitUntil: 'domcontentloaded', timeout: 10_000 });
           await sleep(jitter(600, 500));

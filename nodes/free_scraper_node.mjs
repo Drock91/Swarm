@@ -131,19 +131,35 @@ const JUNK_PREFIXES = new Set([
 const GENERIC_PREFIXES = new Set(['info', 'contact', 'office', 'hello', 'inquiry']);
 
 const SKIP_DOMAINS = new Set([
-  'yelp.com', 'yellowpages.com', 'bbb.org', 'facebook.com', 'instagram.com',
-  'linkedin.com', 'twitter.com', 'x.com', 'google.com', 'bing.com',
-  'healthgrades.com', 'zocdoc.com', 'webmd.com', 'vitals.com', 'npiprofile.com',
-  'angi.com', 'thumbtack.com', 'nextdoor.com', 'tripadvisor.com',
-  'superpages.com', 'manta.com', 'chamberofcommerce.com', 'expertise.com',
+  // Directories & aggregators
+  'yelp.com', 'yellowpages.com', 'bbb.org', 'healthgrades.com', 'zocdoc.com',
+  'webmd.com', 'vitals.com', 'npiprofile.com', 'ratemds.com', 'angi.com',
+  'thumbtack.com', 'nextdoor.com', 'tripadvisor.com', 'superpages.com',
+  'manta.com', 'chamberofcommerce.com', 'expertise.com', 'bark.com',
+  'homeadvisor.com', 'houzz.com', 'porch.com', 'angieslist.com', 'homelight.com',
+  'findlaw.com', 'avvo.com', 'justia.com', 'lawyers.com', 'martindale.com',
+  'nerdwallet.com', 'bankrate.com', 'investopedia.com', 'smartasset.com',
+  // Social & search
+  'facebook.com', 'instagram.com', 'linkedin.com', 'twitter.com', 'x.com',
+  'google.com', 'bing.com', 'youtube.com', 'tiktok.com', 'pinterest.com',
+  'reddit.com', 'wikipedia.org',
+  // News & reference — appear in searches but are NOT prospects
+  'reuters.com', 'cnbc.com', 'bloomberg.com', 'forbes.com', 'wsj.com',
+  'nytimes.com', 'washingtonpost.com', 'businessinsider.com', 'fortune.com',
+  'inc.com', 'entrepreneur.com', 'foxnews.com', 'cnn.com', 'usatoday.com',
+  'apnews.com', 'axios.com', 'thehill.com', 'marketwatch.com', 'kiplinger.com',
+  'merriam-webster.com', 'vocabulary.com', 'dictionary.com', 'britannica.com',
+  'healthline.com', 'mayoclinic.org', 'medlineplus.gov', 'nih.gov', 'cdc.gov',
+  // National insurance / dental chains
+  'deltadental.com', 'cigna.com', 'aetna.com', 'anthem.com', 'unitedhealthcare.com',
+  'humana.com', 'bcbs.com', 'metlife.com', 'guardianlife.com', 'principal.com',
+  'progressive.com', 'statefarm.com', 'allstate.com', 'nationwide.com', 'geico.com',
+  'aspendental.com', 'heartlanddental.com', 'dentalworks.com',
+  // National vet / pet chains
+  'banfield.com', 'vca.com', 'bluepearlvet.com', 'petsmart.com', 'petco.com',
+  // National real estate
   'realtor.com', 'zillow.com', 'redfin.com', 'trulia.com', 'cars.com',
-  'autotrader.com', 'carmax.com', 'avvo.com', 'findlaw.com', 'justia.com',
-  'indeed.com', 'glassdoor.com', 'amazon.com', 'walmart.com', 'irs.gov',
-  'medicare.gov', 'hhs.gov', 'usa.gov', 'wix.com', 'squarespace.com',
-  'shopify.com', 'godaddy.com', 'wordpress.com', 'progressive.com',
-  'statefarm.com', 'allstate.com', 'nationwide.com', 'geico.com',
-  'banfield.com', 'vca.com', 'petsmart.com', 'petco.com',
-  'aspen dental', 'aspendental.com', 'heartlanddental.com',
+  'autotrader.com', 'carmax.com', 'carvana.com',
   'kw.com', 'kellerwilliams.com', 'remax.com', 'coldwellbanker.com',
   'century21.com', 'compass.com',
 ]);
@@ -153,7 +169,22 @@ const FRANCHISE_KEYWORDS = [
   'nationwide', 'liberty mutual', 'edward jones', 'ameriprise', 'raymond james',
   'northwestern mutual', 'keller williams', 're/max', 'remax', 'coldwell banker',
   'century 21', 'exp realty', 'aspen dental', 'heartland dental', 'banfield',
+  'delta dental', 'cigna dental', 'aetna dental', 'humana dental',
 ];
+
+// Industry relevance keywords — site must mention at least one to be a valid prospect
+const INDUSTRY_KEYWORDS = {
+  'Dental Offices':              ['dental', 'dentist', 'orthodont', 'oral', 'teeth', 'tooth', 'dds', 'dmd', 'braces', 'implant'],
+  'Medical Clinics':             ['medical', 'clinic', 'physician', 'doctor', 'patient', 'healthcare', 'urgent care', 'primary care'],
+  'Real Estate Agencies':        ['real estate', 'realty', 'realtor', 'property', 'homes for sale', 'listing', 'mortgage', 'mls'],
+  'Law Firms':                   ['attorney', 'lawyer', 'law firm', 'legal', 'litigation', 'counsel', 'esq', 'practice'],
+  'HVAC & Plumbing Contractors': ['hvac', 'heating', 'cooling', 'plumbing', 'plumber', 'air condition', 'furnace', 'boiler'],
+  'Auto Repair Shops':           ['auto repair', 'mechanic', 'car repair', 'oil change', 'brake', 'transmission', 'vehicle service'],
+  'Veterinary Clinics':          ['veterinary', 'veterinarian', 'vet', 'animal hospital', 'pet clinic', 'dvm', 'spay', 'neuter'],
+  'Financial Advisors':          ['financial advisor', 'financial planner', 'wealth management', 'investment', 'retirement', 'portfolio', 'cfp'],
+  'Insurance Agencies':          ['insurance', 'coverage', 'policy', 'premium', 'liability', 'auto insurance', 'home insurance'],
+  'Chiropractic Offices':        ['chiropractic', 'chiropractor', 'spine', 'adjustment', 'back pain', 'neck pain', 'musculoskeletal'],
+};
 
 export class FreeScraperNode extends BaseNode {
   static nodeType = 'free_scraper';
@@ -163,7 +194,7 @@ export class FreeScraperNode extends BaseNode {
 
     this.targetIndustries = config.target_industries ?? [];
     this.targetLocations  = config.target_locations  ?? [];
-    this.sources          = config.sources ?? ['yelp', 'bbb', 'google_organic', 'google_maps'];
+    this.sources          = config.sources ?? ['bing', 'bbb', 'google_maps'];
     this.dailyCapPerCity  = config.daily_cap_per_city ?? 300;
     this.region_label     = config.region_label ?? 'all';
 
@@ -231,6 +262,7 @@ export class FreeScraperNode extends BaseNode {
       try {
         let leads = [];
         switch (source) {
+          case 'bing':           leads = await this._bingScrape(loc);           break;
           case 'yelp':           leads = await this._yelpScrape(loc);           break;
           case 'bbb':            leads = await this._bbbScrape(loc);            break;
           case 'google_organic': leads = await this._googleOrganicScrape(loc);  break;
@@ -282,6 +314,103 @@ export class FreeScraperNode extends BaseNode {
     const name = (lead.company ?? '').toLowerCase();
     if (FRANCHISE_KEYWORDS.some(k => name.includes(k))) return false;
     return true;
+  }
+
+  // ── Source: Bing Search (most reliable, no bot blocks) ────────────────────
+
+  async _bingScrape(loc) {
+    const leads   = [];
+    const browser = await this._ensureBrowser();
+    const cityKey = `bing:${loc.toLowerCase()}`;
+    if ((this._scrapedToday.get(cityKey) ?? 0) >= this.dailyCapPerCity) return leads;
+
+    const SKIP = new Set([
+      'yelp.com','yellowpages.com','bbb.org','healthgrades.com','zocdoc.com','webmd.com',
+      'vitals.com','npiprofile.com','angi.com','thumbtack.com','tripadvisor.com',
+      'google.com','bing.com','facebook.com','youtube.com','wikipedia.org','linkedin.com',
+      'twitter.com','x.com','instagram.com','tiktok.com','reddit.com',
+      'zillow.com','realtor.com','redfin.com','trulia.com','avvo.com','findlaw.com',
+      'aspendental.com','heartlanddental.com','banfield.com','vca.com',
+      'kw.com','kellerwilliams.com','remax.com','coldwellbanker.com','century21.com',
+      'indeed.com','glassdoor.com','amazon.com','walmart.com','irs.gov',
+    ]);
+
+    for (const industry of this.targetIndustries) {
+      const cityName  = loc.split(',')[0].trim();
+      const statePart = loc.split(',').pop().trim();
+      // Quote city+state to override Bing's IP-based geo-targeting
+      const queries   = [
+        `${industry} "${cityName}" "${statePart}"`,
+        `"${industry}" "${cityName} ${statePart}"`,
+        `best ${industry} near "${cityName}" ${statePart}`,
+        `local ${industry} "${cityName}" ${statePart} site:.com`,
+      ];
+
+      for (const query of queries) {
+        const page = await browser.newPage();
+        try {
+          // Use minimal setup for Bing — the full _prepPage navigator patches break Bing's JS
+          await page.setUserAgent(USER_AGENTS[this._uaIndex++ % USER_AGENTS.length]);
+          await page.setViewport({ width: 1366, height: 768 });
+          const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=30&mkt=en-US&setlang=en-US`;
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+          await sleep(jitter(1500, 1000));
+
+          if (await this._isBlocked(page)) {
+            log.warn({ event: 'bing_blocked', query });
+            continue;
+          }
+
+          const sites = await page.evaluate(() => {
+            const results = [];
+            // Bing wraps every href in bing.com/ck/a redirect — the real URL is in <cite>
+            document.querySelectorAll('#b_results li.b_algo').forEach(li => {
+              const cite = li.querySelector('cite')?.textContent?.trim();
+              if (!cite) return;
+              // cite looks like "https://www.domain.com › path" or "domain.com › path"
+              const raw = cite.split('›')[0].trim().replace(/\s+/g, '');
+              try {
+                const full = raw.startsWith('http') ? raw : 'https://' + raw;
+                const u = new URL(full);
+                const domain = u.hostname.replace(/^www\./, '');
+                if (domain && domain.includes('.')) {
+                  results.push({ url: `https://${u.hostname}`, domain });
+                }
+              } catch {}
+            });
+            return results;
+          });
+
+          const seen = new Set();
+          for (const site of sites) {
+            if (seen.has(site.domain)) continue;
+            seen.add(site.domain);
+            if (SKIP.has(site.domain) || this._skipDomain(site.domain)) continue;
+            if (this._knownDomains.has(site.domain)) {
+              log.debug({ event: 'skip_known_bing', domain: site.domain });
+              continue;
+            }
+
+            const enriched = await this._enrichDomain(site.url, site.domain, industry, loc);
+            if (enriched) {
+              for (const lead of [enriched].flat()) leads.push(lead);
+            }
+            this._scrapedToday.set(cityKey, (this._scrapedToday.get(cityKey) ?? 0) + 1);
+            if ((this._scrapedToday.get(cityKey) ?? 0) >= this.dailyCapPerCity) break;
+            await sleep(jitter(1500, 1000));
+          }
+
+          log.info({ event: 'bing_done', query, sites: sites.length, leads_so_far: leads.length });
+        } catch (err) {
+          log.warn({ event: 'bing_error', query, error: err.message });
+        } finally {
+          await page.close().catch(() => {});
+        }
+        await sleep(jitter(2000, 1500));
+        if ((this._scrapedToday.get(cityKey) ?? 0) >= this.dailyCapPerCity) break;
+      }
+    }
+    return leads;
   }
 
   // ── Source: Yelp ───────────────────────────────────────────────────────────
@@ -410,18 +539,25 @@ export class FreeScraperNode extends BaseNode {
 
         const listings = await page.evaluate(() => {
           const results = [];
-          document.querySelectorAll('[class*="search-result"], .result-block').forEach(el => {
-            const name    = el.querySelector('h2, h3, [class*="business-name"], a[class*="name"]')?.textContent?.trim() ?? null;
-            const phone   = el.querySelector('[class*="phone"]')?.textContent?.trim() ?? null;
-            let website   = el.querySelector('a[class*="website"]')?.href ?? null;
-            const bbbHref = el.querySelector('a[href*="/profile/"]')?.href ?? null;
-            if (!website) {
-              const ext = el.querySelector('a[target="_blank"][href*="www."]:not([href*="bbb.org"])');
-              if (ext) website = ext.href;
-            }
-            if (name) results.push({ name, phone, website, bbbHref });
+          const seen    = new Set();
+          // BBB changed their HTML — use profile links as the anchor point
+          document.querySelectorAll('a[href*="/profile/"]').forEach(link => {
+            const href = link.href;
+            if (!href || seen.has(href)) return;
+            seen.add(href);
+            // Walk up to find the result container
+            const container = link.closest('li, article, [class*="result"], [class*="card"], [class*="Content"]')
+                           ?? link.parentElement?.parentElement;
+            const nameEl = container?.querySelector('h2, h3, [class*="business-name"], [class*="businessName"], strong')
+                        ?? link;
+            const name = nameEl?.textContent?.trim();
+            if (!name || name.length < 3 || name.length > 120) return;
+            const phone   = container?.querySelector('[href^="tel:"], [class*="phone"]')?.textContent?.trim() ?? null;
+            const siteEl  = container?.querySelector('a[target="_blank"][href^="http"]:not([href*="bbb.org"])');
+            const website = siteEl?.href ?? null;
+            results.push({ name, phone, website, bbbHref: href });
           });
-          return results;
+          return results.slice(0, 25);
         });
 
         for (const listing of listings) {
@@ -575,29 +711,36 @@ export class FreeScraperNode extends BaseNode {
         }
 
         // Scroll sidebar to load more results
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 6; i++) {
           await page.evaluate(() => {
             const feed = document.querySelector('[role="feed"]')
-                      ?? document.querySelector('div[aria-label*="Results"]');
-            if (feed) feed.scrollTop += 600;
+                      ?? document.querySelector('div[aria-label*="Results"]')
+                      ?? document.querySelector('div[aria-label*="result"]');
+            if (feed) feed.scrollTop += 800;
           });
-          await sleep(jitter(1000, 500));
+          await sleep(jitter(800, 400));
         }
 
         const listings = await page.evaluate(() => {
           const results = [];
-          const cards = document.querySelectorAll('[role="feed"] a[href*="/maps/place/"], div.Nv2PK a');
-          const seen  = new Set();
+          const seen    = new Set();
+          // Multiple fallback selectors — Maps changes class names frequently
+          const cards = [
+            ...document.querySelectorAll('div.Nv2PK a[href*="/maps/place/"]'),
+            ...document.querySelectorAll('[role="feed"] a[href*="/maps/place/"]'),
+            ...document.querySelectorAll('a[href*="/maps/place/"]'),
+          ];
           for (const card of cards) {
             const href = card.href;
             if (!href || seen.has(href)) continue;
             seen.add(href);
-            const parent = card.closest('[role="article"]') ?? card.parentElement;
-            const name   = parent?.querySelector('div.fontHeadlineSmall, .qBF1Pd')?.textContent?.trim()
+            const parent = card.closest('[role="article"]') ?? card.closest('div.Nv2PK') ?? card.parentElement;
+            const name   = parent?.querySelector('div.fontHeadlineSmall, .qBF1Pd, [class*="fontHeadline"]')
+                            ?.textContent?.trim()
                         ?? card.textContent?.trim() ?? null;
             if (name && href) results.push({ name, mapsUrl: href });
           }
-          return results.slice(0, 25);
+          return results.slice(0, 30);
         });
 
         log.info({ event: 'maps_found', query, count: listings.length });
@@ -841,6 +984,17 @@ export class FreeScraperNode extends BaseNode {
 
       const homeData = await this._extractPageData(page);
       this._mergeInto(result, homeData);
+
+      // Relevance gate — skip sites that have nothing to do with the target industry
+      const keywords = INDUSTRY_KEYWORDS[industry] ?? [];
+      if (keywords.length > 0) {
+        const bodyLow = (await page.evaluate(() => document.body?.innerText?.toLowerCase() ?? '').catch(() => ''));
+        const isRelevant = keywords.some(kw => bodyLow.includes(kw));
+        if (!isRelevant) {
+          log.debug({ event: 'skip_irrelevant', domain, industry });
+          return result; // return empty result — no emails, no phone, so lead is dropped
+        }
+      }
 
       // Generic contact pages
       const basePath = `https://${domain}`;

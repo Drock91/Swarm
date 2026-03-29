@@ -140,7 +140,7 @@ const nodes = workerEntries.map(([regionName, cities]) => {
       region_label:       regionName,
       target_industries:  industries,
       target_locations:   cities,
-      sources:            ['yelp', 'bbb', 'google_organic', 'google_maps'],
+      sources:            ['bing', 'bbb', 'google_maps'],
       daily_cap_per_city: 500,   // high cap — let it run
       cycle_sleep:        30,    // 30s between cycles (moves to next city each cycle)
       allow_self_destruct: false, // never kill these

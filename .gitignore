@@ -52,3 +52,6 @@ desktop.ini
 .idea/
 *.swp
 nul
+
+# Local workspace — exports, notes, scratch files (never committed)
+my-workspace/

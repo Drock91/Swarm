@@ -93,7 +93,7 @@ const ALL_CITIES = [
 // ── Parse CLI args ────────────────────────────────────────────────────────────
 const args       = process.argv.slice(2);
 const workerFlag = args.indexOf('--workers');
-const numWorkers = workerFlag !== -1 ? parseInt(args[workerFlag + 1], 10) : 2;
+const numWorkers = workerFlag !== -1 ? parseInt(args[workerFlag + 1], 10) : 1;
 
 // Optional single-region debug filter (e.g. "texas" filters to TX cities only)
 const STATE_FILTERS = {

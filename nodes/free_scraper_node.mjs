@@ -888,11 +888,12 @@ export class FreeScraperNode extends BaseNode {
       name:                null,
       title:               null,
       company:             null,
-      website:             domain,
+      website:             `https://${cleanDomain}`,
       industry,
       location,
       has_chatbot:         false,
       site_tagline:        null,
+      about_text:          null,
       business_hours:      null,
       has_after_hours_gap: true,
       has_contact_form:    false,
@@ -911,18 +912,28 @@ export class FreeScraperNode extends BaseNode {
     const site = await this._deepScrapeWebsite(url, domain, industry);
     base.phone               = site.phone;
     base.name                = site.ownerName;
-    base.company             = site.siteName;
+    base.company             = site.cleanName;   // cleaned title, not raw page title
     base.has_chatbot         = site.hasChatbot;
     base.site_tagline        = site.tagline;
+    base.about_text          = site.aboutText;
     base.business_hours      = site.businessHours;
     base.has_after_hours_gap = site.hasAfterHoursGap;
     base.has_contact_form    = site.hasContactForm;
     base.has_booking_widget  = site.hasBookingWidget;
     base.site_platform       = site.sitePlatform;
 
-    // Extract first name for email template {{first_name}}
+    // Extract first name — reject single-word junk values like "our", "the", "home"
+    const JUNK_NAMES = new Set([
+      'our', 'the', 'your', 'my', 'home', 'welcome', 'profile', 'services',
+      'about', 'contact', 'staff', 'team', 'office', 'clinic', 'practice',
+      'dr', 'mr', 'ms', 'mrs', 'hello', 'hi',
+    ]);
     if (site.ownerName) {
-      base.first_name = site.ownerName.trim().split(/\s+/)[0] ?? null;
+      const parts = site.ownerName.trim().split(/\s+/);
+      const candidate = parts[0]?.toLowerCase().replace(/[^a-z]/g, '');
+      if (candidate && !JUNK_NAMES.has(candidate) && candidate.length >= 2) {
+        base.first_name = parts[0];
+      }
     }
 
     if (site.hasChatbot) {
@@ -967,6 +978,7 @@ export class FreeScraperNode extends BaseNode {
     const result = {
       emails: [], phone: null, ownerName: null,
       hasChatbot: false, chatbotName: null, tagline: null, siteName: null,
+      cleanName: null, aboutText: null,
       businessHours: null, hasAfterHoursGap: true, hasContactForm: false,
       hasBookingWidget: false, sitePlatform: 'custom',
     };
@@ -1208,9 +1220,28 @@ export class FreeScraperNode extends BaseNode {
       const siteName = document.querySelector('meta[property="og:site_name"]')?.getAttribute('content')
                     ?? document.title ?? null;
 
+      // Clean company name — strip everything after the first | - – — separator in the page title
+      let cleanName = document.querySelector('meta[property="og:site_name"]')?.getAttribute('content') ?? null;
+      if (!cleanName && document.title) {
+        cleanName = document.title
+          .split(/\s*[\|\-\u2013\u2014]\s*/)[0]  // split on | - – —
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+      if (cleanName && cleanName.length > 60) cleanName = cleanName.slice(0, 60).trim();
+
+      // About text — first substantive paragraph (50+ chars, not nav/footer noise)
+      let aboutText = null;
+      const paras = [...document.querySelectorAll('p')].map(p => p.innerText?.trim()).filter(t => t && t.length >= 60);
+      if (paras.length > 0) {
+        // Prefer paragraphs that don't look like cookie notices or legal boilerplate
+        const good = paras.find(t => !/(cookie|privacy|copyright|all rights reserved|terms of)/i.test(t));
+        aboutText = (good ?? paras[0]).replace(/\s+/g, ' ').slice(0, 300);
+      }
+
       return {
-        emails, phone, hasChatbot, chatbotName, ownerName, siteName,
-        tagline: (metaDesc ?? '').slice(0, 200).trim() || null,
+        emails, phone, hasChatbot, chatbotName, ownerName, siteName, cleanName, aboutText,
+        tagline: (metaDesc ?? '').slice(0, 250).trim() || null,
         businessHours, hasAfterHoursGap, hasContactForm, hasBookingWidget, sitePlatform,
       };
     }, CHATBOT_SIGNATURES, BOOKING_SIGNATURES);
@@ -1224,6 +1255,8 @@ export class FreeScraperNode extends BaseNode {
     target.chatbotName       = target.chatbotName       || src.chatbotName;
     target.tagline           = target.tagline           || src.tagline;
     target.siteName          = target.siteName          || src.siteName;
+    target.cleanName         = target.cleanName         || src.cleanName;
+    target.aboutText         = target.aboutText         || src.aboutText;
     target.businessHours     = target.businessHours     || src.businessHours;
     target.hasAfterHoursGap  = target.hasAfterHoursGap  ?? src.hasAfterHoursGap;
     target.hasContactForm    = target.hasContactForm     ?? src.hasContactForm;

@@ -76,6 +76,7 @@ export function emailNodeConfig(profile) {
     business_name:    business?.name     ?? '',
     business_website: business?.website  ?? '',
     differentiators:  business?.differentiators ?? [],
+    value_anchor:     offer?.value_anchor ?? '',
   };
 }
 
@@ -153,10 +154,15 @@ export function scraperNodeConfig(profile) {
     has_website:             icp?.has_website         ?? true,
     icp_description:         icp?.description         ?? '',
     source_business:         business?.name           ?? '',
-    // Hunter Discover-specific config
+    daily_cap_per_city:      200,
+    leads_per_cycle:         500,
     hunter_industries:       hunterIndustries,
     hunter_locations:        hunterLocations,
     hunter_headcount:        ['1-10', '11-50'],
+    // yellowpages = local directory scrape (free, best for small city local businesses)
+    // web_scrape  = Bing+Puppeteer (free, supplements YP with organic results)
+    // hunter_discover = Hunter.io company discovery (requires HUNTER_API_KEY)
+    sources:                 ['yellowpages', 'web_scrape'],
   };
 }
 

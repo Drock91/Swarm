@@ -10,7 +10,7 @@
  *   → next generation starts ahead of where this one started
  */
 
-import OpenAI from 'openai';
+import { chatJSON } from './llm.mjs';
 import { log } from './logger.mjs';
 
 const SYNTHESIS_SYSTEM_PROMPT = `
@@ -24,11 +24,9 @@ a new node of this type.
 `.trim();
 
 export class SwarmIntelligence {
-  constructor({ memory, nodeType, llmModel = 'gpt-4o' }) {
+  constructor({ memory, nodeType }) {
     this.memory   = memory;
     this.nodeType = nodeType;
-    this.llmModel = llmModel;
-    this.openai   = new OpenAI();
   }
 
   // ------------------------------------------------------------------ //
@@ -102,16 +100,11 @@ Return a clean JSON config object.
 `.trim();
 
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           this.llmModel,
-        messages:        [
-          { role: 'system', content: SYNTHESIS_SYSTEM_PROMPT },
-          { role: 'user',   content: prompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature:     0.2,
+      const result = await chatJSON({
+        system:     SYNTHESIS_SYSTEM_PROMPT,
+        messages:   [{ role: 'user', content: prompt }],
+        max_tokens: 1024,
       });
-      const result = JSON.parse(resp.choices[0].message.content);
       log.info({ event: 'swarm_synthesis_complete', node_type: this.nodeType, fields: Object.keys(result).length });
       return result;
     } catch (err) {

@@ -13,10 +13,10 @@
  *   - Sends via Amazon SES (no third-party email vendor needed)
  */
 
-import { SESClient, SendRawEmailCommand }           from '@aws-sdk/client-ses';
+import nodemailer                                     from 'nodemailer';
 import { SQSClient, ReceiveMessageCommand,
          DeleteMessageCommand }                       from '@aws-sdk/client-sqs';
-import OpenAI                                         from 'openai';
+import { chat }                                        from '../core/llm.mjs';
 import { BaseNode }                                   from '../core/base_node.mjs';
 import { log }                                        from '../core/logger.mjs';
 
@@ -40,9 +40,16 @@ export class EmailNode extends BaseNode {
   constructor(config, region = 'us-east-1', parentId = null) {
     super(config, region, parentId);
 
-    this.ses             = new SESClient({ region });
+    this.transporter     = nodemailer.createTransport({
+      host:   process.env.BREVO_SMTP_HOST ?? 'smtp-relay.brevo.com',
+      port:   Number(process.env.BREVO_SMTP_PORT ?? 587),
+      secure: false,
+      auth: {
+        user: process.env.BREVO_SMTP_USER,
+        pass: process.env.BREVO_SMTP_PASS,
+      },
+    });
     this.sqsFeedback     = new SQSClient({ region });
-    this.openai          = new OpenAI();
     this.fromEmail       = config.from_email  ?? process.env.SES_FROM_EMAIL ?? 'derek@heinrichstech.com';
     this.fromName        = config.from_name   ?? process.env.SES_FROM_NAME  ?? 'Derek';
     this.replyToEmail    = config.reply_to     ?? this.fromEmail;
@@ -83,19 +90,22 @@ export class EmailNode extends BaseNode {
     this._checkRateHealth();
 
     // 3. Handle incoming tasks (shutdown, run_campaign, update_config)
-    const tasks = await this.receiveTasks(20);
+    const tasks = await this.receiveTasks(10);
     for (const task of tasks) {
       await this._handleTask(task);
       await this.ackTask(task._receipt_handle);
     }
 
-    // 4. Send emails only if within send window and not auto-paused
+    // 4. Auto-seed any fresh leads from the scraper that have no sequence_state yet
+    await this._seedNewLeads();
+
+    // 5. Send emails only if within send window and not auto-paused
     if (this._paused) {
       log.warn({ event: 'email_auto_paused', bounces: this._bounces, complaints: this._complaints });
       return;
     }
     if (!this._isWithinSendWindow()) {
-      log.debug({ event: 'outside_send_window', window: `${this.sendWindowStart}-${this.sendWindowEnd}`, days: this.sendDays });
+      log.info({ event: 'outside_send_window', window: `${this.sendWindowStart}-${this.sendWindowEnd}`, days: this.sendDays });
       return;
     }
     if (this._sentToday < this.dailySendLimit) {
@@ -144,9 +154,43 @@ export class EmailNode extends BaseNode {
     }
   }
 
+  /**
+   * Pick up any leads the scraper stored that have no sequence_state yet
+   * and stamp them as pending so they enter the send queue automatically.
+   */
+  async _seedNewLeads() {
+    try {
+      const all      = await this.memory.getLeads(null, 5000);
+      const unseeded = all.filter(l =>
+        l.email &&
+        !l.sequence_state &&
+        !l.unsubscribed &&
+        !l.bounced &&
+        !l.complained &&
+        !l.suppressed,
+      );
+      if (!unseeded.length) return;
+      const now = Math.floor(Date.now() / 1000);
+      for (const lead of unseeded) {
+        await this.memory.upsertLead({
+          ...lead,
+          sequence_state: {
+            lead_id:      lead.lead_id,
+            step:         0,
+            next_send_at: now,
+            status:       'pending',
+          },
+        });
+      }
+      log.info({ event: 'leads_seeded', count: unseeded.length });
+    } catch (err) {
+      log.error({ event: 'seed_leads_error', error: err.message });
+    }
+  }
+
   async _processPendingSequences() {
     const now   = Math.floor(Date.now() / 1000);
-    const leads = await this.memory.getLeads(null, 200);
+    const leads = await this.memory.getLeads(null, 2000);
     const due   = leads.filter(l =>
       l.sequence_state?.status === 'pending' &&
       (l.sequence_state?.next_send_at ?? Infinity) <= now &&
@@ -175,8 +219,18 @@ export class EmailNode extends BaseNode {
     const html    = this._appendUnsubscribeFooter(body);
 
     try {
-      const rawMsg = this._buildRawEmail(lead.email, subject, html);
-      await this.ses.send(new SendRawEmailCommand({ RawMessage: { Data: rawMsg } }));
+      await this.transporter.sendMail({
+        from:    `"${this.fromName}" <${this.fromEmail}>`,
+        to:      lead.email,
+        replyTo: this.replyToEmail,
+        subject,
+        html,
+        text:    html.replace(/<[^>]+>/g, ''),
+        headers: {
+          'List-Unsubscribe':      `<mailto:${this.replyToEmail}?subject=unsubscribe>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        },
+      });
 
       const nextInterval = this.followUpDays[Math.min(step, this.followUpDays.length - 1)];
       await this.memory.upsertLead({
@@ -193,7 +247,14 @@ export class EmailNode extends BaseNode {
       await this.memory.writeMetric(this.nodeId, this.nodeType, 'emails_sent', 1);
       this.increment('emails_sent');
       this._sentToday++;
-      log.debug({ event: 'email_sent', lead_id: lead.lead_id, step });
+      log.info({
+        event:   'email_sent',
+        step:    step + 1,
+        to:      lead.email,
+        company: lead.company ?? lead.website ?? '?',
+        subject,
+        body:    body.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 300),
+      });
     } catch (err) {
       log.error({ event: 'email_send_error', lead_id: lead.lead_id, error: err.message });
       this.increment('errors');
@@ -434,9 +495,8 @@ export class EmailNode extends BaseNode {
   async _pickSubject(lead, step) {
     if (step === 0) {
       const winners = await this.memory.getTopKnowledge(this.nodeType, 'subject_line', 3);
-      if (winners.length) return winners[0].data?.subject ?? this.subjectLines[0];
+      if (winners.length) return winners[0].data?.subject ?? await this._generateSubject(lead);
     }
-    if (step < this.subjectLines.length) return this.subjectLines[step];
     return this._generateSubject(lead);
   }
 
@@ -450,23 +510,79 @@ export class EmailNode extends BaseNode {
       .trim();
   }
 
+  _buildSenderContext() {
+    const c = this.config;
+    return [
+      `You are writing on behalf of: ${c.from_name ?? this.fromName}`,
+      `Business: ${c.business_name ?? 'Heinrichs Software Solutions'}`,
+      `Website: ${c.business_website ?? 'heinrichstech.com'}`,
+      `What we sell: ${c.offer_name ?? 'AI Chatbot'} at ${c.offer_price ?? '$49/month'}`,
+      `Free trial: ${c.offer_trial ?? '14-day free trial, no credit card'}`,
+      `What it solves: ${c.pain_solved ?? 'losing leads after hours because no one answers customer questions'}`,
+      ...(c.differentiators?.length
+        ? [`Key facts about us: ${c.differentiators.join(', ')}`]
+        : []),
+      `Sender persona: ${c.persona ?? 'direct, no-nonsense veteran founder'}`,
+      ...(c.value_anchor ? [`Value comparison you can use: ${c.value_anchor}`] : []),
+      `Sign off with:\n${c.signature ?? c.from_name ?? this.fromName}`,
+    ].join('\n');
+  }
+
+  _buildSystemPrompt() {
+    const c = this.config;
+    return [
+      `You are a cold email copywriter writing on behalf of ${c.from_name ?? this.fromName}.`,
+      ``,
+      `WHAT YOU ARE SELLING:`,
+      `Product: ${c.offer_name ?? 'AI Chatbot'} — custom-built and managed for small businesses`,
+      `Price: ${c.offer_price ?? '$79/month'}`,
+      `Trial: ${c.offer_trial ?? '14-day free trial, no credit card required'}`,
+      `Website: ${c.business_website ?? 'heinrichstech.com'}`,
+      `What it solves: ${c.pain_solved ?? 'losing customers after hours because no one answers questions'}`,
+      ...(c.value_anchor ? [`Value: ${c.value_anchor}`] : []),
+      ``,
+      `KEY FACTS ABOUT THE SENDER:`,
+      ...(c.differentiators?.map(d => `- ${d}`) ?? []),
+      ``,
+      `SIGN OFF EVERY EMAIL WITH EXACTLY THIS AND NOTHING AFTER:`,
+      c.signature ?? c.from_name ?? this.fromName,
+      ``,
+      `ABSOLUTE RULES — NEVER BREAK THESE:`,
+      `- Every email MUST mention the chatbot product by name`,
+      `- Every email MUST mention the free trial`,
+      `- Every email MUST include the website: ${c.business_website ?? 'heinrichstech.com'}`,
+      `- Under 100 words`,
+      `- No dashes of any kind (no — no – no " - ")`,
+      `- No subject line in the output — body only`,
+      `- No corporate words: leverage, utilize, synergy, streamline, robust, endeavor, facilitate`,
+      `- Write like a real person, short sentences, plain English`,
+      `- Do NOT write generic fluff — be specific about what you sell`,
+    ].join('\n');
+  }
+
   async _generateSubject(lead) {
+    const variants = this.config.sequence_templates?.step_1?.subject_variants ?? [];
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:      'gpt-4o-mini',
-        messages:   [{ role: 'user', content:
-          `Write a cold email subject line for ${lead.name ?? 'a prospect'} ` +
-          `at ${lead.company ?? 'their company'}.\n\n` +
-          `Rules:\n` +
-          `- One line only, no punctuation at the end\n` +
-          `- Do NOT use dashes of any kind (no —, no –, no " - ")\n` +
-          `- Keep it short and plain, like a real person typed it\n` +
-          `- No big or formal words` }],
+      const raw = await chat({
+        system: this._buildSystemPrompt(),
+        messages: [{ role: 'user', content:
+          `Write one cold email subject line for this prospect.\n\n` +
+          `Prospect: ${lead.name ?? 'the owner'} at ${lead.company ?? 'their business'} (${lead.industry ?? ''}, ${lead.location ?? ''})\n` +
+          (lead.site_tagline ? `Their site: "${lead.site_tagline}"\n` : '') +
+          (variants.length ? `\nStyle examples (do not copy verbatim): ${variants.join(' | ')}\n` : '') +
+          `\nRules for the subject line:\n` +
+          `- One line, under 50 characters\n` +
+          `- Do NOT include any person's name — not the prospect's, not Derek's\n` +
+          `- Do NOT use questions\n` +
+          `- Focus on the business or the problem, not the person\n` +
+          `- Examples of good style: "after-hours leads for dental offices" | "quick thought on your website" | "AI chatbot for ${lead.industry ?? 'your business'}"\n` +
+          `- No punctuation at the end`,
+        }],
         max_tokens: 50,
-        temperature: 0.8,
       });
-      const raw = resp.choices[0].message.content.trim().replace(/^"|"$/g, '');
-      return this._sanitizeCopy(raw);
+      // Take only the first line — LLM sometimes bleeds signature into output
+      const firstLine = raw.split('\n')[0].replace(/^"|"$/g, '').trim();
+      return this._sanitizeCopy(firstLine);
     } catch {
       return this.subjectLines[0];
     }
@@ -480,23 +596,31 @@ export class EmailNode extends BaseNode {
           .replace(/\{\{company\}\}/g, lead.company ?? 'your company')
       );
     }
+
+    const stepKey = `step_${step + 1}`;
+    const tmpl    = this.config.sequence_templates?.[stepKey] ?? {};
+    const stepInstructions = [
+      tmpl.hook ? `Hook guidance: ${tmpl.hook}` : null,
+      tmpl.body ? `Body guidance: ${tmpl.body}` : null,
+      tmpl.cta  ? `CTA guidance: ${tmpl.cta}`   : null,
+    ].filter(Boolean).join('\n');
+
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:      'gpt-4o-mini',
-        messages:   [{ role: 'user', content:
-          `Write a short cold email (step ${step + 1} of a sequence) for:\n` +
-          `Name: ${lead.name ?? 'there'}\nCompany: ${lead.company ?? ''}\n` +
-          `Title: ${lead.title ?? ''}\nPain point: ${lead.pain_point ?? ''}\n\n` +
-          `Rules (read carefully):\n` +
-          `- Under 120 words\n` +
-          `- Do NOT use dashes of any kind. No em dash (—), no en dash (–), no spaced hyphen (word - word). Just skip them.\n` +
-          `- Write like a normal person texting a colleague. Simple words only.\n` +
-          `- No formal or corporate language. No words like \"leverage\", \"utilize\", \"endeavor\", \"facilitate\", \"streamline\", \"robust\", \"synergy\".\n` +
-          `- No subject line. Sign off as '${this.fromName}'.` }],
-        max_tokens:  250,
-        temperature: 0.7,
+      const body = await chat({
+        system: this._buildSystemPrompt(),
+        messages: [{ role: 'user', content:
+          `Write email step ${step + 1} of ${this.config.sequence_length ?? 3} for this prospect.\n\n` +
+          `Name: ${lead.name ?? 'there'}\n` +
+          `Company: ${lead.company ?? '(unknown)'}\n` +
+          `Industry: ${lead.industry ?? ''}\n` +
+          `Location: ${lead.location ?? ''}\n` +
+          (lead.site_tagline ? `Their website says: "${lead.site_tagline}"\n` : '') +
+          (stepInstructions ? `\nStep guidance:\n${stepInstructions}\n` : '') +
+          `\nIf their site tagline is provided, open with one specific sentence referencing their actual business. Then pitch the chatbot. Then mention the free trial and the website. End with the sign-off.`,
+        }],
+        max_tokens: 300,
       });
-      return this._sanitizeCopy(resp.choices[0].message.content.trim());
+      return this._sanitizeCopy(body);
     } catch {
       return `Hey ${lead.name ?? 'there'}, just wanted to reach out. Would love to connect. Best, ${this.fromName}`;
     }

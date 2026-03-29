@@ -33,7 +33,7 @@ const config = {
   task_definitions:        taskDefs,
   ecs_cluster:             process.env.SWARM_ECS_CLUSTER ?? 'swarm-cluster',
   orchestration_interval:  parseInt(process.env.SWARM_ORCHESTRATION_INTERVAL ?? '300'),
-  llm_model:               process.env.SWARM_LLM_MODEL ?? 'gpt-4o',
+  llm_model:               process.env.SWARM_LLM_MODEL ?? 'claude-opus-4-6',
   network_config:          process.env.SWARM_NETWORK_CONFIG
     ? JSON.parse(process.env.SWARM_NETWORK_CONFIG)
     : {},

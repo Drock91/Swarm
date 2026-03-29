@@ -10,7 +10,7 @@
  */
 
 import axios from 'axios';
-import OpenAI from 'openai';
+import { chat, chatJSON } from '../core/llm.mjs';
 import { BaseNode } from '../core/base_node.mjs';
 import { log } from '../core/logger.mjs';
 
@@ -31,7 +31,6 @@ export class SEONode extends BaseNode {
 
   constructor(config, region = 'us-east-1', parentId = null) {
     super(config, region, parentId);
-    this.openai          = new OpenAI();
     this.serpApiKey      = config.serp_api_key ?? '';
     this.wpApiUrl        = config.wordpress_api_url ?? '';
     this.wpAuthToken     = config.wordpress_auth_token ?? '';
@@ -95,16 +94,13 @@ export class SEONode extends BaseNode {
   async _gptKeywordIdeas() {
     const seeds = this.keywords.slice(0, 5).join(', ') || this.targetNiche;
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           'gpt-4o-mini',
-        messages:        [{ role: 'user', content:
+      const data = await chatJSON({
+        messages: [{ role: 'user', content:
           `Give me 10 SEO article topic ideas for the niche: ${this.targetNiche}. ` +
           `Seed keywords: ${seeds}. Focus on long-tail, low-competition. ` +
           `Return JSON: { "topics": ["...", ...] }` }],
-        response_format: { type: 'json_object' },
-        temperature:     0.7,
+        max_tokens: 512,
       });
-      const data = JSON.parse(resp.choices[0].message.content);
       const list = Array.isArray(data) ? data : (data.topics ?? Object.values(data)[0] ?? []);
       return list.slice(0, 10);
     } catch (err) {
@@ -137,16 +133,11 @@ export class SEONode extends BaseNode {
 
   async _generateArticle(keyword) {
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           'gpt-4o',
-        messages:        [
-          { role: 'system', content: SEO_ARTICLE_SYSTEM },
-          { role: 'user',   content: `Write a 1500-word SEO article targeting: '${keyword}'\nNiche: ${this.targetNiche}` },
-        ],
-        response_format: { type: 'json_object' },
-        temperature:     0.5,
+      return await chatJSON({
+        system:     SEO_ARTICLE_SYSTEM,
+        messages:   [{ role: 'user', content: `Write a 1500-word SEO article targeting: '${keyword}'\nNiche: ${this.targetNiche}` }],
+        max_tokens: 4096,
       });
-      return JSON.parse(resp.choices[0].message.content);
     } catch (err) {
       log.error({ event: 'article_gen_error', keyword, error: err.message });
       return null;

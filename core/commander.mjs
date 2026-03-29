@@ -14,7 +14,7 @@ import { ECSClient, RunTaskCommand } from '@aws-sdk/client-ecs';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { randomUUID } from 'crypto';
 import Docker from 'dockerode';
-import OpenAI from 'openai';
+import { chatJSON } from './llm.mjs';
 import { SharedMemory } from './shared_memory.mjs';
 import { SwarmIntelligence } from './swarm_intelligence.mjs';
 import { log } from './logger.mjs';
@@ -55,7 +55,6 @@ export class CommanderAgent {
     this.memory          = new SharedMemory(region);
     this.sqs             = new SQSClient({ region });
     this.ecs             = new ECSClient({ region });
-    this.openai          = new OpenAI();
     this._running        = false;
     this._swarmIQCache   = {};
 
@@ -195,16 +194,11 @@ export class CommanderAgent {
     }, null, 2);
 
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           this.config.llm_model ?? 'gpt-4o',
-        messages:        [
-          { role: 'system', content: COMMANDER_SYSTEM_PROMPT },
-          { role: 'user',   content: prompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature:     0.2,
+      return await chatJSON({
+        system:     COMMANDER_SYSTEM_PROMPT,
+        messages:   [{ role: 'user', content: prompt }],
+        max_tokens: 1024,
       });
-      return JSON.parse(resp.choices[0].message.content);
     } catch (err) {
       log.error({ event: 'commander_llm_error', error: err.message });
       return null;

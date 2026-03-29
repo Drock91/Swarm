@@ -40,7 +40,7 @@ if (process.argv[3]) {
 
 // Inject env-based credentials if not already in config
 const envMap = {
-  openai_api_key:        'OPENAI_API_KEY',
+  anthropic_api_key:     'ANTHROPIC_API_KEY',
   from_email:            'SES_FROM_EMAIL',
   from_name:             'SES_FROM_NAME',
   reply_to:              'SES_REPLY_TO',

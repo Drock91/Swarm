@@ -11,7 +11,7 @@
  *   - Optional: pushes summary to Slack or email
  */
 
-import OpenAI from 'openai';
+import { chatJSON } from '../core/llm.mjs';
 import { BaseNode } from '../core/base_node.mjs';
 import { log } from '../core/logger.mjs';
 
@@ -45,7 +45,6 @@ export class AnalyticsNode extends BaseNode {
 
   constructor(config, region = 'us-east-1', parentId = null) {
     super(config, region, parentId);
-    this.openai        = new OpenAI();
     this.reportCadence = (config.report_cadence_hours ?? 24) * 3_600_000;
     this.slackWebhook  = config.slack_webhook_url ?? '';
     this._lastReport   = 0;
@@ -204,16 +203,11 @@ export class AnalyticsNode extends BaseNode {
     }, null, 2);
 
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           this.config.llm_model ?? 'gpt-4o',
-        messages:        [
-          { role: 'system', content: ANALYST_SYSTEM },
-          { role: 'user',   content: prompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature:     0.2,
+      return await chatJSON({
+        system:     ANALYST_SYSTEM,
+        messages:   [{ role: 'user', content: prompt }],
+        max_tokens: 1024,
       });
-      return JSON.parse(resp.choices[0].message.content);
     } catch (err) {
       log.error({ event: 'analytics_llm_error', error: err.message });
       return null;

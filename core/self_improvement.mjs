@@ -9,7 +9,7 @@
  * 5. Losing variants get killed; winners get cloned with variation
  */
 
-import OpenAI from 'openai';
+import { chat, chatJSON } from './llm.mjs';
 import { log } from './logger.mjs';
 
 const IMPROVEMENT_SYSTEM_PROMPT = `
@@ -37,11 +37,9 @@ export class SelfImprovementEngine {
   /**
    * @param {{ memory: import('./shared_memory.mjs').SharedMemory }} opts
    */
-  constructor({ memory, nodeType, llmModel = 'gpt-4o' }) {
+  constructor({ memory, nodeType }) {
     this.memory    = memory;
     this.nodeType  = nodeType;
-    this.llmModel  = llmModel;
-    this.openai    = new OpenAI();
   }
 
   // ------------------------------------------------------------------ //
@@ -60,17 +58,11 @@ export class SelfImprovementEngine {
     const prompt = this._buildPrompt({ nodeId, context, metrics24h, campaigns, knowledge });
 
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           this.llmModel,
-        messages:        [
-          { role: 'system', content: IMPROVEMENT_SYSTEM_PROMPT },
-          { role: 'user',   content: prompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature:     0.3,
+      const update = await chatJSON({
+        system:     IMPROVEMENT_SYSTEM_PROMPT,
+        messages:   [{ role: 'user', content: prompt }],
+        max_tokens: 1024,
       });
-
-      const update = JSON.parse(resp.choices[0].message.content);
 
       if (update && Object.keys(update).length > 0) {
         log.info({
@@ -122,13 +114,10 @@ Respond with JSON: { "variants": ["...", "..."] }
 `.trim();
 
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           this.llmModel,
-        messages:        [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
-        temperature:     0.7,
+      const result = await chatJSON({
+        messages:   [{ role: 'user', content: prompt }],
+        max_tokens: 1024,
       });
-      const result = JSON.parse(resp.choices[0].message.content);
       if (Array.isArray(result)) return result;
       return result.variants ?? result.copy ?? Object.values(result)[0] ?? [];
     } catch (err) {
@@ -222,12 +211,8 @@ Respond with JSON: { "variants": ["...", "..."] }
     }, null, 2);
 
     try {
-      const resp = await this.openai.chat.completions.create({
-        model:           this.llmModel,
-        messages: [
-          {
-            role:    'system',
-            content: `You analyze why an autonomous ${this.nodeType} marketing agent failed to reach its
+      return await chatJSON({
+        system: `You analyze why an autonomous ${this.nodeType} marketing agent failed to reach its
 performance threshold after ${failedCycles} optimization cycles and is shutting itself down.
 
 Your analysis will be stored in the swarm knowledge base and read by future nodes
@@ -241,13 +226,9 @@ Respond ONLY with a JSON object:
   "segments_or_targets_to_avoid":    ["..."],
   "recommendations_for_successors":  "specific actionable advice for the next generation"
 }`.trim(),
-          },
-          { role: 'user', content: prompt },
-        ],
-        response_format: { type: 'json_object' },
-        temperature:     0.3,
+        messages:   [{ role: 'user', content: prompt }],
+        max_tokens: 1024,
       });
-      return JSON.parse(resp.choices[0].message.content);
     } catch (err) {
       log.error({ event: 'failure_report_llm_error', node_id: nodeId, error: err.message });
       return {

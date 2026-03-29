@@ -15,7 +15,6 @@
 
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import OpenAI from 'openai';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { BaseNode } from '../core/base_node.mjs';
@@ -44,7 +43,6 @@ export class ScraperNode extends BaseNode {
 
   constructor(config, region = 'us-east-1', parentId = null) {
     super(config, region, parentId);
-    this.openai          = new OpenAI();
     this.apolloApiKey    = config.apollo_api_key ?? '';
     this.hunterApiKey    = config.hunter_api_key ?? '';
     this.targetTitles    = config.target_titles ?? ['CEO', 'Founder', 'CMO', 'VP Marketing'];
@@ -61,13 +59,19 @@ export class ScraperNode extends BaseNode {
     this.hunterLocations  = config.hunter_locations   ?? [];      // [{ country, state, city }]
 
     // Google scrape settings
-    this.dailyCapPerCity  = config.daily_cap_per_city ?? 30;      // max businesses to scrape per city/day
+    this.dailyCapPerCity  = config.daily_cap_per_city ?? 200;     // max businesses to scrape per city/day
     this._scrapedToday    = new Map();                             // city → count
     this._scrapedDomains  = new Set();                             // global dedup across cycles
     this._browser         = null;                                  // shared Puppeteer browser
 
     // Track which domains we've already searched via Hunter (to avoid burning search credits)
     this._searchedDomains = new Set();
+
+    // Pre-warm domain/email cache — skip known businesses without scraping
+    this._knownDomains      = new Set();
+    this._cacheWarmed       = false;
+    this._cycleCount        = 0;
+    this._cacheRefreshEvery = config.cache_refresh_every ?? 10;
   }
 
   async runCycle() {
@@ -76,7 +80,28 @@ export class ScraperNode extends BaseNode {
       await this._handleTask(t);
       await this.ackTask(t._receipt_handle);
     }
+
+    this._cycleCount++;
+    if (!this._cacheWarmed || this._cycleCount % this._cacheRefreshEvery === 0) {
+      await this._warmDomainCache();
+    }
+
     await this._scrapeAndStore();
+  }
+
+  async _warmDomainCache() {
+    try {
+      const existing = await this.memory.getLeads(null, 10000);
+      this._knownDomains.clear();
+      for (const lead of existing) {
+        if (lead.website) this._knownDomains.add(lead.website.toLowerCase().replace(/^www\./, ''));
+        if (lead.email)   this._knownDomains.add(lead.email.toLowerCase());
+      }
+      this._cacheWarmed = true;
+      log.info({ event: 'domain_cache_warmed', known: this._knownDomains.size });
+    } catch (err) {
+      log.warn({ event: 'domain_cache_warn', error: err.message });
+    }
   }
 
   async _handleTask(task) {
@@ -96,6 +121,7 @@ export class ScraperNode extends BaseNode {
         switch (source) {
           case 'google_scrape':   leads = await this._googleDiscoverLeads(); break;
           case 'web_scrape':      leads = await this._googleDiscoverLeads(); break;
+          case 'yellowpages':     leads = await this._yellowPagesDiscover(); break;
           case 'hunter_discover': leads = await this._hunterDiscover();      break;
           case 'apollo':          leads = await this._scrapeApollo();       break;
           case 'hunter':          leads = await this._scrapeHunter();       break;
@@ -111,10 +137,17 @@ export class ScraperNode extends BaseNode {
       await sleep(2000); // polite gap between sources
     }
 
-    const deduped = await this._deduplicate(freshLeads);
+    const deduped = this._deduplicateLocally(freshLeads);
     let stored = 0;
     for (const lead of deduped) {
+      const dom = (lead.website ?? '').toLowerCase().replace(/^www\./, '');
+      const em  = (lead.email   ?? '').toLowerCase();
+      if (dom && this._knownDomains.has(dom)) continue;
+      if (em  && this._knownDomains.has(em))  continue;
+
       await this.memory.upsertLead({ ...lead, source_node: this.nodeId });
+      if (dom) this._knownDomains.add(dom);
+      if (em)  this._knownDomains.add(em);
       stored++;
     }
 
@@ -181,19 +214,36 @@ export class ScraperNode extends BaseNode {
         continue;
       }
       const remaining = this.dailyCapPerCity - todayCount;
+      const cityLeads = []; // per-city counter so cap doesn't bleed across cities
 
       for (const industry of industries) {
-        if (leads.length >= remaining) break;
+        if (cityLeads.length >= remaining) break;
 
-        const query = `${industry} in ${loc}`;
+        // Run multiple query phrasings per industry to maximise unique local results
+        const cityName  = loc.split(',')[0].trim();
+        const statePart = loc.split(',').pop().trim();
+        const queries   = [
+          `${industry} in ${loc}`,
+          `${industry} ${cityName} ${statePart}`,
+          `local ${industry} ${cityName}`,
+          `best ${industry} near ${cityName} ${statePart}`,
+        ];
+
+        for (const query of queries) {
+          if (cityLeads.length >= remaining) break;
         try {
           const sites = await this._searchBusinesses(query);
           log.info({ event: 'bing_search', query, results: sites.length });
 
           for (const site of sites) {
-            if (leads.length >= remaining) break;
-            if (this._scrapedDomains.has(site.domain)) continue;
-            this._scrapedDomains.add(site.domain);
+            if (cityLeads.length >= remaining) break;
+            const cleanDom = site.domain.toLowerCase().replace(/^www\./, '');
+            if (this._scrapedDomains.has(cleanDom)) continue;
+            if (this._knownDomains.has(cleanDom)) {
+              log.debug({ event: 'skip_known', domain: cleanDom });
+              continue;
+            }
+            this._scrapedDomains.add(cleanDom);
 
             try {
               const siteData = await this._scrapeWebsite(site.url);
@@ -209,41 +259,71 @@ export class ScraperNode extends BaseNode {
                 continue;
               }
 
-              for (const email of siteData.emails) {
-                leads.push({
-                  email,
-                  name:        siteData.ownerName,
-                  title:       null,
-                  company:     site.title || null,
-                  website:     site.domain,
-                  phone:       siteData.phone,
-                  industry,
-                  location:    loc,
-                  has_chatbot: false,
-                  confidence:  null,
-                  verified:    null,
-                  source:      'web_scrape',
-                  linkedin_url: null,
-                });
+              // Reject sites that explicitly mention a DIFFERENT state than the target.
+              // Most local business sites don't mention their city in the meta description,
+              // so a hard "must contain city" check blocks everything. Instead we only
+              // skip when the site clearly says it's somewhere else (e.g., "Serving Asheville, NC"
+              // showing up for an Atlanta, GA search).
+              // Reject sites that explicitly reference a different US state than the target.
+              // Checks both abbreviations (OH) and full names (Ohio).
+              const targetStateAbbr = loc.split(',').pop().trim().toLowerCase(); // e.g. "ga"
+              const STATE_MAP = {
+                'alabama':'al','alaska':'ak','arizona':'az','arkansas':'ar','california':'ca',
+                'colorado':'co','connecticut':'ct','delaware':'de','florida':'fl','georgia':'ga',
+                'hawaii':'hi','idaho':'id','illinois':'il','indiana':'in','iowa':'ia','kansas':'ks',
+                'kentucky':'ky','louisiana':'la','maine':'me','maryland':'md','massachusetts':'ma',
+                'michigan':'mi','minnesota':'mn','mississippi':'ms','missouri':'mo','montana':'mt',
+                'nebraska':'ne','nevada':'nv','new hampshire':'nh','new jersey':'nj',
+                'new mexico':'nm','new york':'ny','north carolina':'nc','north dakota':'nd',
+                'ohio':'oh','oklahoma':'ok','oregon':'or','pennsylvania':'pa','rhode island':'ri',
+                'south carolina':'sc','south dakota':'sd','tennessee':'tn','texas':'tx','utah':'ut',
+                'vermont':'vt','virginia':'va','washington':'wa','west virginia':'wv',
+                'wisconsin':'wi','wyoming':'wy',
+              };
+              const STATE_ABBRS = new Set(Object.values(STATE_MAP));
+              const siteText    = ((siteData.tagline ?? '') + ' ' + (siteData.siteName ?? ''));
+              const siteTextLow = siteText.toLowerCase();
+
+              const foundStates = new Set();
+              // Match abbreviated states (e.g. ", OH" or " OH ")
+              for (const m of siteText.matchAll(/\b([A-Z]{2})\b/g)) {
+                if (STATE_ABBRS.has(m[1].toLowerCase())) foundStates.add(m[1].toLowerCase());
+              }
+              // Match full state names (e.g. "Columbus, Ohio")
+              for (const [name, abbr] of Object.entries(STATE_MAP)) {
+                if (siteTextLow.includes(name)) foundStates.add(abbr);
+              }
+
+              if (foundStates.size > 0 && !foundStates.has(targetStateAbbr)) {
+                log.debug({ event: 'location_mismatch', domain: site.domain, expected: loc, found: [...foundStates] });
+                continue;
+              }
+
+              const leadBase = {
+                name:         siteData.ownerName,
+                title:        null,
+                company:      siteData.siteName || site.title || null,
+                website:      site.domain,
+                phone:        siteData.phone,
+                industry,
+                location:     loc,
+                has_chatbot:  false,
+                site_tagline: siteData.tagline || null,
+                confidence:   null,
+                verified:     null,
+                source:       'web_scrape',
+                linkedin_url: null,
+              };
+
+              // Cap at 2 emails per domain — prevents news/directory sites from
+              // flooding the list with dozens of staff addresses
+              for (const email of siteData.emails.slice(0, 2)) {
+                cityLeads.push({ ...leadBase, email });
               }
 
               // If we found a phone but no email, still store it
               if (siteData.emails.length === 0 && siteData.phone) {
-                leads.push({
-                  email:       null,
-                  name:        siteData.ownerName,
-                  title:       null,
-                  company:     site.title || null,
-                  website:     site.domain,
-                  phone:       siteData.phone,
-                  industry,
-                  location:    loc,
-                  has_chatbot: false,
-                  confidence:  null,
-                  verified:    null,
-                  source:      'web_scrape',
-                  linkedin_url: null,
-                });
+                cityLeads.push({ ...leadBase, email: null });
               }
             } catch (err) {
               log.debug({ event: 'site_scrape_error', domain: site.domain, error: err.message });
@@ -255,11 +335,14 @@ export class ScraperNode extends BaseNode {
           log.warn({ event: 'google_search_error', query, error: err.message });
         }
 
-        await sleep(3000 + Math.random() * 4000); // Gap between Google searches
+        await sleep(2000 + Math.random() * 2000); // Gap between query variations
+        } // end query variations loop
+        await sleep(1000); // Brief pause between industries
       }
 
-      // Update daily counter
-      this._scrapedToday.set(cityKey, todayCount + leads.length);
+      // Update daily counter and merge city leads into global array
+      this._scrapedToday.set(cityKey, todayCount + cityLeads.length);
+      leads.push(...cityLeads);
     }
 
     log.info({ event: 'web_scrape_complete', leads_found: leads.length });
@@ -276,14 +359,51 @@ export class ScraperNode extends BaseNode {
     const page = await browser.newPage();
     const results = [];
 
-    // Directory / aggregator domains to skip — we want actual business sites
+    // Directory / aggregator / national brand domains to skip — we want LOCAL business sites only
     const skipDomains = [
+      // Directories & aggregators
       'yelp.com', 'yellowpages.com', 'bbb.org', 'healthgrades.com', 'zocdoc.com',
-      'webmd.com', 'vitals.com', 'npiprofile.com', 'deltadental.com', 'cigna.com',
-      'aetna.com', 'ratemds.com', 'google.com', 'bing.com', 'microsoft.com',
-      'facebook.com', 'youtube.com', 'wikipedia.org', 'linkedin.com',
-      'twitter.com', 'instagram.com', 'angi.com', 'thumbtack.com',
-      'nextdoor.com', 'tripadvisor.com', 'mapquest.com',
+      'webmd.com', 'vitals.com', 'npiprofile.com', 'ratemds.com', 'angi.com',
+      'thumbtack.com', 'nextdoor.com', 'tripadvisor.com', 'mapquest.com',
+      'superpages.com', 'manta.com', 'chamberofcommerce.com', 'expertise.com',
+      'bark.com', 'homeadvisor.com', 'houzz.com', 'thumbtack.com', 'porch.com',
+      'angieslist.com', 'checkbook.org', 'homelight.com',
+      // Social & search
+      'google.com', 'bing.com', 'microsoft.com', 'facebook.com', 'youtube.com',
+      'wikipedia.org', 'linkedin.com', 'twitter.com', 'x.com', 'instagram.com',
+      'tiktok.com', 'pinterest.com', 'reddit.com',
+      // News & media — these rank for industry queries but are NOT prospects
+      'reuters.com', 'cnbc.com', 'bloomberg.com', 'forbes.com', 'wsj.com',
+      'nytimes.com', 'washingtonpost.com', 'businessinsider.com', 'fortune.com',
+      'inc.com', 'entrepreneur.com', 'foxnews.com', 'cnn.com', 'nbcnews.com',
+      'apnews.com', 'axios.com', 'thehill.com', 'politico.com', 'usatoday.com',
+      'marketwatch.com', 'investopedia.com', 'nerdwallet.com', 'bankrate.com',
+      'kiplinger.com', 'motleyfool.com', 'seeking alpha.com',
+      // National insurance & healthcare chains
+      'deltadental.com', 'cigna.com', 'aetna.com', 'anthem.com', 'unitedhealthcare.com',
+      'humana.com', 'bluecrossblue shield.com', 'bcbs.com', 'metlife.com',
+      'mutualofomaha.com', 'guardianlife.com', 'principal.com',
+      // National real estate brands
+      'zillow.com', 'realtor.com', 'redfin.com', 'trulia.com', 'century21.com',
+      'kw.com', 'kellerwilliams.com', 're/max.com', 'remax.com', 'coldwellbanker.com',
+      'compass.com', 'sothebysrealty.com', 'bhhs.com',
+      // National veterinary / pet chains
+      'banfield.com', 'vca.com', 'bluepearlvet.com', 'petsmart.com', 'petco.com',
+      'animalhumanesociety.org', 'aspca.org', 'humanesociety.org',
+      // National dental / healthcare chains
+      'aspen dental', 'aspendental.com', 'heartland dental', 'heartlanddental.com',
+      'dentalworks.com', 'oralcare.com',
+      // National auto chains
+      'autotrader.com', 'cars.com', 'carmax.com', 'carvana.com', 'dealerSocket.com',
+      // National legal / financial directories
+      'avvo.com', 'findlaw.com', 'justia.com', 'lawyers.com', 'martindale.com',
+      'smartasset.com', 'wealthmanagement.com', 'advisoryhq.com',
+      // Job boards / HR sites that show up in searches
+      'indeed.com', 'glassdoor.com', 'ziprecruiter.com', 'monster.com', 'salary.com',
+      // Misc platforms that are not business sites
+      'irs.gov', 'usa.gov', 'state.gov', 'medicare.gov', 'hhs.gov',
+      'shopify.com', 'wix.com', 'squarespace.com', 'wordpress.com', 'godaddy.com',
+      'amazon.com', 'ebay.com', 'etsy.com', 'walmart.com', 'target.com',
     ];
 
     try {
@@ -311,7 +431,8 @@ export class ScraperNode extends BaseNode {
         const realUrl = this._decodeBingUrl(r.url);
         try {
           const domain = new URL(realUrl).hostname.replace(/^www\./, '');
-          if (!seen.has(domain) && !skipDomains.some(s => domain.includes(s))) {
+          const isGov  = domain.endsWith('.gov') || domain.endsWith('.mil') || domain.endsWith('.edu');
+          if (!isGov && !seen.has(domain) && !skipDomains.some(s => domain.includes(s))) {
             seen.add(domain);
             results.push({ url: realUrl, title: r.title, domain });
           }
@@ -352,6 +473,8 @@ export class ScraperNode extends BaseNode {
       ownerName:   null,
       hasChatbot:  false,
       chatbotName: null,
+      tagline:     null,
+      siteName:    null,
     };
 
     try {
@@ -371,6 +494,14 @@ export class ScraperNode extends BaseNode {
 
       // Wait a bit for dynamic chat widgets to inject
       await sleep(2000);
+
+      // Skip Cloudflare / bot-detection challenge pages
+      const pageTitle = await page.title().catch(() => '');
+      const CHALLENGE_PHRASES = ['just a moment', 'attention required', 'security check', 'ddos protection', 'please wait', 'checking your browser'];
+      if (CHALLENGE_PHRASES.some(p => pageTitle.toLowerCase().includes(p))) {
+        log.debug({ event: 'cloudflare_blocked', url });
+        return result;
+      }
 
       // Scrape the main page
       const homeData = await this._extractPageData(page);
@@ -394,8 +525,18 @@ export class ScraperNode extends BaseNode {
       await page.close().catch(() => {});
     }
 
-    // Deduplicate emails
-    result.emails = [...new Set(result.emails)];
+    // Deduplicate and strip generic/technical prefixes — we want real humans
+    const JUNK_PREFIXES = [
+      'dev', 'webmaster', 'admin', 'noreply', 'no-reply', 'support',
+      'help', 'hello', 'team', 'media', 'press', 'marketing', 'sales',
+      'billing', 'accounts', 'hr', 'careers', 'jobs', 'legal', 'privacy',
+      'abuse', 'spam', 'postmaster', 'hostmaster', 'newsletter',
+      'editor', 'news', 'general', 'enquiries', 'enquiry',
+    ];
+    result.emails = [...new Set(result.emails)].filter(email => {
+      const prefix = email.split('@')[0].toLowerCase().replace(/[^a-z]/g, '');
+      return !JUNK_PREFIXES.includes(prefix);
+    });
     return result;
   }
 
@@ -488,7 +629,16 @@ export class ScraperNode extends BaseNode {
         if (match) { ownerName = match[1].trim(); break; }
       }
 
-      return { emails, phone, hasChatbot, chatbotName, ownerName };
+      // --- Site tagline / meta description (used for email personalization) ---
+      const metaDesc = document.querySelector('meta[name="description"]')?.getAttribute('content')
+        ?? document.querySelector('meta[property="og:description"]')?.getAttribute('content')
+        ?? null;
+      const siteName = document.querySelector('meta[property="og:site_name"]')?.getAttribute('content')
+        ?? document.title
+        ?? null;
+      const tagline = (metaDesc ?? '').slice(0, 200).trim() || null;
+
+      return { emails, phone, hasChatbot, chatbotName, ownerName, tagline, siteName };
     }, CHATBOT_SIGNATURES);
   }
 
@@ -500,7 +650,167 @@ export class ScraperNode extends BaseNode {
       ownerName:   existing.ownerName || pageData.ownerName,
       hasChatbot:  existing.hasChatbot || pageData.hasChatbot,
       chatbotName: existing.chatbotName || pageData.chatbotName,
+      tagline:     existing.tagline || pageData.tagline || null,
+      siteName:    existing.siteName || pageData.siteName || null,
     };
+  }
+
+  // ------------------------------------------------------------------ //
+  //  YELLOW PAGES  →  LOCAL DIRECTORY SCRAPE  (free, no API)             //
+  // ------------------------------------------------------------------ //
+
+  /**
+   * Scrapes YellowPages.com search results for each industry/city combo.
+   * YP returns 30 actual local businesses per page with phone + website URL.
+   * Far more reliable than Bing organic for small-city local business discovery.
+   */
+  async _yellowPagesDiscover() {
+    const leads     = [];
+    const browser   = await this._ensureBrowser();
+    const YP_INDUSTRY_MAP = {
+      'Dental Offices':               'dentists',
+      'Medical Clinics':              'medical-clinics',
+      'Real Estate Agencies':         'real-estate-agents',
+      'Law Firms':                    'attorneys',
+      'HVAC & Plumbing Contractors':  'hvac',
+      'Auto Repair Shops':            'auto-repair',
+      'Veterinary Clinics':           'veterinarians',
+      'Financial Advisors':           'financial-planning-consultants',
+      'Insurance Agencies':           'insurance',
+      'Chiropractic Offices':         'chiropractors',
+    };
+
+    for (const loc of this.targetLocations) {
+      const cityKey    = loc.toLowerCase().trim();
+      const todayCount = this._scrapedToday.get(cityKey) ?? 0;
+      if (todayCount >= this.dailyCapPerCity) continue;
+      const remaining  = this.dailyCapPerCity - todayCount;
+      const cityLeads  = [];
+
+      const citySlug  = loc.split(',')[0].trim().toLowerCase().replace(/\s+/g, '-');
+      const stateSlug = loc.split(',').pop().trim().toLowerCase();
+
+      for (const industry of this.targetIndustries) {
+        if (cityLeads.length >= remaining) break;
+        const ypCategory = YP_INDUSTRY_MAP[industry] ?? industry.toLowerCase().replace(/\s+/g, '-');
+        const url = `https://www.yellowpages.com/${citySlug}-${stateSlug}/${ypCategory}`;
+
+        let page;
+        try {
+          page = await browser.newPage();
+          await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+          await sleep(2000);
+
+          const pageTitle = await page.title().catch(() => '');
+          const CHALLENGE_PHRASES = ['just a moment', 'attention required', 'security check', 'ddos protection'];
+          if (CHALLENGE_PHRASES.some(p => pageTitle.toLowerCase().includes(p))) {
+            log.debug({ event: 'yp_blocked', url });
+            await page.close();
+            continue;
+          }
+
+          // Extract listings from YP results page
+          const listings = await page.evaluate(() => {
+            const results = [];
+            document.querySelectorAll('.result').forEach(el => {
+              const name    = el.querySelector('.business-name')?.textContent?.trim() ?? null;
+              const phone   = el.querySelector('.phones')?.textContent?.trim() ?? null;
+              const website = el.querySelector('a.track-visit-website')?.href
+                           ?? el.querySelector('[class*="website"]')?.href
+                           ?? null;
+              const street  = el.querySelector('.street-address')?.textContent?.trim() ?? null;
+              const locality = el.querySelector('.locality')?.textContent?.trim() ?? null;
+              if (name) results.push({ name, phone, website, street, locality });
+            });
+            return results;
+          });
+
+          log.info({ event: 'yp_search', url, results: listings.length });
+
+          for (const listing of listings) {
+            if (cityLeads.length >= remaining) break;
+            if (!listing.website) continue;
+
+            let domain;
+            try { domain = new URL(listing.website).hostname.replace(/^www\./, ''); } catch { continue; }
+            if (this._scrapedDomains.has(domain)) continue;
+            this._scrapedDomains.add(domain);
+
+            // Skip national chains / junk domains (reuse same skip list)
+            const SKIP = ['yelp.com','yellowpages.com','bbb.org','facebook.com','healthgrades.com',
+              'webmd.com','zocdoc.com','google.com','linkedin.com','insurance.com',
+              'progressive.com','statefarm.com','allstate.com','nationwide.com',
+              'banfield.com','vca.com','petsmart.com','petco.com'];
+            if (SKIP.some(s => domain.includes(s))) continue;
+
+            // Skip franchise agents — they aren't independent businesses
+            const FRANCHISE_BRANDS = [
+              'state farm', 'allstate', 'geico', 'primerica', 'farmers insurance',
+              'nationwide', 'liberty mutual', 'country financial', 'edward jones',
+              'ameriprise', 'raymond james', 'nw mutual', 'northwestern mutual',
+              'keller williams', 're/max', 'remax', 'coldwell banker', 'century 21',
+              'exp realty', 'compass real estate',
+            ];
+            const listingLower = listing.name.toLowerCase();
+            if (FRANCHISE_BRANDS.some(b => listingLower.includes(b))) continue;
+
+            // Scrape the actual business site for email + tagline
+            let siteData = { emails: [], phone: listing.phone, ownerName: null, tagline: null, siteName: listing.name, hasChatbot: false };
+            try {
+              siteData = await this._scrapeWebsite(listing.website);
+              siteData.phone    = siteData.phone    ?? listing.phone;
+              siteData.siteName = siteData.siteName ?? listing.name;
+            } catch {}
+
+            if (siteData.hasChatbot) {
+              log.debug({ event: 'chatbot_found', domain });
+              continue;
+            }
+
+            const leadBase = {
+              name:         siteData.ownerName ?? null,
+              title:        null,
+              company:      listing.name,
+              website:      domain,
+              phone:        siteData.phone ?? listing.phone,
+              industry,
+              location:     loc,
+              has_chatbot:  false,
+              site_tagline: siteData.tagline ?? null,
+              confidence:   null,
+              verified:     null,
+              source:       'yellowpages',
+              linkedin_url: null,
+            };
+
+            if (siteData.emails.length > 0) {
+              for (const email of siteData.emails.slice(0, 2)) {
+                cityLeads.push({ ...leadBase, email });
+              }
+            } else {
+              // Keep phone-only leads — still useful for the database
+              cityLeads.push({ ...leadBase, email: null });
+            }
+
+            await sleep(1500 + Math.random() * 1500);
+          }
+
+          await page.close();
+        } catch (err) {
+          log.warn({ event: 'yp_error', url, error: err.message });
+          try { await page?.close(); } catch {}
+        }
+
+        await sleep(2000 + Math.random() * 2000);
+      }
+
+      this._scrapedToday.set(cityKey, todayCount + cityLeads.length);
+      leads.push(...cityLeads);
+    }
+
+    log.info({ event: 'yp_scrape_complete', leads_found: leads.length });
+    return leads;
   }
 
   // ------------------------------------------------------------------ //
@@ -727,14 +1037,13 @@ export class ScraperNode extends BaseNode {
   //  DEDUPLICATION                                                       //
   // ------------------------------------------------------------------ //
 
-  async _deduplicate(leads) {
-    if (!leads.length) return [];
-    const existing = await this.memory.getLeads(null, 5000);
-    const knownEmails = new Set(existing.map(l => l.email).filter(Boolean));
-    const knownReddit = new Set(existing.map(l => l.reddit_user).filter(Boolean));
-    return leads.filter(l => {
-      if (l.email && knownEmails.has(l.email)) return false;
-      if (l.reddit_user && knownReddit.has(l.reddit_user)) return false;
+  _deduplicateLocally(leads) {
+    const flat = leads.flat().filter(Boolean);
+    const seen = new Set();
+    return flat.filter(lead => {
+      const key = (lead.email ?? lead.reddit_user ?? lead.website ?? '').toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
   }

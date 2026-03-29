@@ -5,15 +5,15 @@
  * Each instance owns a slice of cities so they don't overlap.
  *
  * Usage:
- *   node run_free_scrapers.mjs            # all 8 regions
- *   node run_free_scrapers.mjs south      # one region only
- *   node run_free_scrapers.mjs --workers 4  # limit parallel workers (less RAM)
+ *   node run_free_scrapers.mjs            # 2 workers (safe default for home PC)
+ *   node run_free_scrapers.mjs texas      # one region only
+ *   node run_free_scrapers.mjs --workers 4  # more workers if you have 16GB+ RAM
  *
  * Resource guide:
  *   1 worker  → ~400MB RAM, ~2-3Mbps     (safest on home network)
- *   2 workers → ~800MB RAM, ~5Mbps
- *   4 workers → ~1.5GB RAM, ~10Mbps      (good default)
- *   8 workers → ~3GB RAM,   ~20Mbps      (max throughput, needs 16GB+ RAM)
+ *   2 workers → ~800MB RAM, ~5Mbps       ← DEFAULT (home PC safe)
+ *   4 workers → ~1.5GB RAM, ~10Mbps      (needs 8GB+ free RAM)
+ *   8 workers → ~3GB RAM,   ~20Mbps      (needs 16GB+ RAM, will OOM on most home PCs)
  */
 
 import { config } from 'dotenv';
@@ -101,7 +101,7 @@ const REGIONS = {
 // ── Parse CLI args ────────────────────────────────────────────────────────────
 const args         = process.argv.slice(2);
 const workerFlag   = args.indexOf('--workers');
-const maxWorkers   = workerFlag !== -1 ? parseInt(args[workerFlag + 1], 10) : 8;
+const maxWorkers   = workerFlag !== -1 ? parseInt(args[workerFlag + 1], 10) : 2;
 const regionFilter = args.find(a => REGIONS[a]) ?? null;
 
 const regionsToRun = regionFilter

@@ -271,6 +271,7 @@ export class FreeScraperNode extends BaseNode {
         }
         freshLeads.push(...leads);
         this.increment('leads_found', leads.length);
+        console.log(`  [${this.region_label}] ${source} @ ${loc}: ${leads.length} raw leads`);
         log.info({ event: 'source_done', source, location: loc, found: leads.length });
       } catch (err) {
         log.error({ event: 'source_error', source, error: err.message });
@@ -300,8 +301,13 @@ export class FreeScraperNode extends BaseNode {
       if (lead.confidence === 'guessed') this.increment('leads_guessed');
       if ((lead.lead_score ?? 0) >= 60) { this.increment('hot_leads'); hot++; }
       stored++;
+
+      const flag = (lead.lead_score ?? 0) >= 60 ? ' 🔥' : '';
+      console.log(`  [${this.region_label}] +LEAD ${(lead.company ?? lead.website ?? '?').slice(0, 40)} | ${lead.email ?? 'no-email'} | score:${lead.lead_score ?? 0}${flag}`);
     }
 
+    const skipped = this.getCounter('domains_skipped');
+    console.log(`[${this.region_label}] ${loc} → found:${freshLeads.length} stored:${stored} hot:${hot} skipped:${skipped} knownCache:${this._knownDomains.size}`);
     log.info({ event: 'cycle_done', location: loc, found: freshLeads.length, stored, hot });
   }
 
@@ -357,7 +363,9 @@ export class FreeScraperNode extends BaseNode {
           await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 });
           await sleep(jitter(1500, 1000));
 
-          if (await this._isBlocked(page)) {
+          const pageTitle = await page.title().catch(() => '');
+          if (this._isChallengePage(pageTitle)) {
+            console.log(`  [BING BLOCKED] "${query}" title="${pageTitle}"`);
             log.warn({ event: 'bing_blocked', query });
             continue;
           }
@@ -401,6 +409,7 @@ export class FreeScraperNode extends BaseNode {
             await sleep(jitter(1500, 1000));
           }
 
+          console.log(`  [BING] "${query.slice(0, 50)}" → ${sites.length} sites extracted`);
           log.info({ event: 'bing_done', query, sites: sites.length, leads_so_far: leads.length });
         } catch (err) {
           log.warn({ event: 'bing_error', query, error: err.message });
@@ -593,6 +602,7 @@ export class FreeScraperNode extends BaseNode {
           await sleep(jitter(1500, 1500));
         }
 
+        console.log(`  [BBB] ${term} @ ${loc}: ${listings.length} listings found`);
         log.info({ event: 'bbb_done', url, found: listings.length });
       } catch (err) {
         log.warn({ event: 'bbb_error', url, error: err.message });
@@ -747,6 +757,7 @@ export class FreeScraperNode extends BaseNode {
           return results.slice(0, 30);
         });
 
+        console.log(`  [MAPS] ${query.slice(0, 50)}: ${listings.length} cards found`);
         log.info({ event: 'maps_found', query, count: listings.length });
 
         for (const listing of listings) {
@@ -989,7 +1000,7 @@ export class FreeScraperNode extends BaseNode {
       const homeData = await this._extractPageData(page);
       this._mergeInto(result, homeData);
 
-      // Relevance gate — site must mention industry keywords 2+ times (not just a dictionary entry)
+      // Relevance gate — site must mention at least 1 industry keyword (filters out completely off-topic domains)
       const keywords = INDUSTRY_KEYWORDS[industry] ?? [];
       if (keywords.length > 0) {
         const bodyLow = (await page.evaluate(() => document.body?.innerText?.toLowerCase() ?? '').catch(() => ''));
@@ -998,7 +1009,7 @@ export class FreeScraperNode extends BaseNode {
           while ((pos = bodyLow.indexOf(kw, pos)) !== -1) { count++; pos += kw.length; }
           return n + count;
         }, 0);
-        if (hitCount < 2) {
+        if (hitCount < 1) {
           log.debug({ event: 'skip_irrelevant', domain, industry, hits: hitCount });
           return result;
         }

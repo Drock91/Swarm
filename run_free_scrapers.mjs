@@ -110,10 +110,12 @@ const regionsToRun = regionFilter
 
 const workerEntries = Object.entries(regionsToRun).slice(0, maxWorkers);
 
+const fmt = key => key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
 log.info({
   event:    'scraper_launch',
   workers:  workerEntries.length,
-  regions:  workerEntries.map(([r]) => r),
+  regions:  workerEntries.map(([r]) => fmt(r)),
   cities:   workerEntries.reduce((sum, [, cities]) => sum + cities.length, 0),
   industries: industries.length,
 });
@@ -123,7 +125,7 @@ console.log(`
 ║          FREE SCRAPER — STATE-BY-STATE MODE          ║
 ╠══════════════════════════════════════════════════════╣
 ║  Workers  : ${String(workerEntries.length).padEnd(38)} ║
-║  Regions  : ${workerEntries.map(([r]) => r).join(', ').padEnd(38)} ║
+║  Regions  : ${workerEntries.map(([r]) => fmt(r)).join(', ').padEnd(38)} ║
 ║  Cities   : ${String(workerEntries.reduce((s, [, c]) => s + c.length, 0)).padEnd(38)} ║
 ║  Industries: ${String(industries.length).padEnd(37)} ║
 ║                                                      ║
@@ -137,7 +139,7 @@ const nodes = workerEntries.map(([regionName, cities]) => {
   const node = new FreeScraperNode(
     {
       node_id:            `free-scraper-${regionName}`,
-      region_label:       regionName,
+      region_label:       fmt(regionName),
       target_industries:  industries,
       target_locations:   cities,
       sources:            ['bing', 'bbb', 'google_maps'],

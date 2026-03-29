@@ -716,7 +716,7 @@ export class FreeScraperNode extends BaseNode {
       const page = await ctx.newPage();
       try {
         await this._prepPage(page);
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30_000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 });
         await sleep(jitter(3000, 2000));
 
         if (await this._isBlocked(page)) {

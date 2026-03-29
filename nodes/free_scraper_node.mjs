@@ -51,6 +51,15 @@ const CHATBOT_SIGNATURES = [
   'widget.js', 'chat-widget', 'chatwidget', 'live-chat',
 ];
 
+// Booking/scheduling widgets — these owners ARE tech-forward (Pro tier pitch)
+const BOOKING_SIGNATURES = [
+  'calendly.com', 'acuityscheduling.com', 'square.site', 'squareup.com/appointments',
+  'bookedfusion', 'schedulicity', 'mindbodyonline', 'jane.app', 'nookal',
+  'appointy.com', 'setmore.com', 'simplybook.me', 'booksy.com', 'vagaro.com',
+  'fresha.com', 'zocdoc.com/practice', 'healthie.com', 'kareo.com',
+  'practicefusion', 'webpt.com', 'clinicient',
+];
+
 // ── Rotating real Chrome user agents ────────────────────────────────────────
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -238,28 +247,29 @@ export class FreeScraperNode extends BaseNode {
     }
 
     const deduped = this._deduplicateLocally(freshLeads);
-    let stored = 0;
+    let stored = 0, hot = 0;
     for (const lead of deduped) {
       if (!this._passesQualityGate(lead)) continue;
 
-      // Final cache check — catches leads that came in from another parallel worker this cycle
+      // Final cache check — catches leads added by a parallel worker this cycle
       const dom = (lead.website ?? '').toLowerCase().replace(/^www\./, '');
       const em  = (lead.email  ?? '').toLowerCase();
-      if (dom && this._knownDomains.has(dom)) continue;
-      if (em  && this._knownDomains.has(em))  continue;
+      if (dom && this._knownDomains.has(dom)) { this.increment('domains_skipped'); continue; }
+      if (em  && this._knownDomains.has(em))  { this.increment('domains_skipped'); continue; }
 
       await this.memory.upsertLead({ ...lead, source_node: this.nodeId });
 
-      // Keep local cache up-to-date so subsequent leads in this batch don't repeat
       if (dom) this._knownDomains.add(dom);
       if (em)  this._knownDomains.add(em);
 
-      if (lead.email) this.increment('leads_with_email');
+      if (lead.email)              this.increment('leads_with_email');
+      if (lead.name || lead.first_name) this.increment('leads_with_name');
       if (lead.confidence === 'guessed') this.increment('leads_guessed');
+      if ((lead.lead_score ?? 0) >= 60) { this.increment('hot_leads'); hot++; }
       stored++;
     }
 
-    log.info({ event: 'cycle_done', location: loc, found: freshLeads.length, stored });
+    log.info({ event: 'cycle_done', location: loc, found: freshLeads.length, stored, hot });
   }
 
   // ── Quality gate ──────────────────────────────────────────────────────────
@@ -320,6 +330,14 @@ export class FreeScraperNode extends BaseNode {
 
         for (const listing of listings) {
           let website = listing.website;
+
+          // If we already have the website in the card, check the cache before visiting the detail page
+          if (website) {
+            let earlyDomain;
+            try { earlyDomain = new URL(website).hostname.replace(/^www\./, ''); } catch {}
+            if (earlyDomain && (this._skipDomain(earlyDomain) || this._knownDomains.has(earlyDomain))) continue;
+          }
+
           if (!website && listing.yelpUrl) {
             website = await this._getYelpWebsite(ctx, listing.yelpUrl);
           }
@@ -408,6 +426,14 @@ export class FreeScraperNode extends BaseNode {
 
         for (const listing of listings) {
           let website = listing.website;
+
+          // Early cache check — skip BBB detail page visit for known domains
+          if (website) {
+            let earlyDomain;
+            try { earlyDomain = new URL(website).hostname.replace(/^www\./, ''); } catch {}
+            if (earlyDomain && (this._skipDomain(earlyDomain) || this._knownDomains.has(earlyDomain))) continue;
+          }
+
           if (!website && listing.bbbHref) {
             website = await this._getBBBWebsite(ctx, listing.bbbHref);
           }
@@ -577,17 +603,35 @@ export class FreeScraperNode extends BaseNode {
         log.info({ event: 'maps_found', query, count: listings.length });
 
         for (const listing of listings) {
-          const website = await this._getMapsWebsite(ctx, listing.mapsUrl);
-          if (!website) continue;
+          const mapsData = await this._getMapsListingData(ctx, listing.mapsUrl);
+          if (!mapsData.website) continue;
 
           let domain;
-          try { domain = new URL(website).hostname.replace(/^www\./, ''); } catch { continue; }
+          try { domain = new URL(mapsData.website).hostname.replace(/^www\./, ''); } catch { continue; }
           if (this._skipDomain(domain)) continue;
+          if (this._knownDomains.has(domain)) {
+            log.debug({ event: 'skip_known_maps', domain });
+            continue;
+          }
 
-          const enriched = await this._enrichDomain(website, domain, industry, loc);
+          const enriched = await this._enrichDomain(mapsData.website, domain, industry, loc);
           if (enriched) {
             for (const lead of [enriched].flat()) {
-              leads.push({ ...lead, company: lead.company ?? listing.name });
+              // Overlay Maps-sourced data — it's more reliable than what we scrape off the site
+              const merged = {
+                ...lead,
+                company:      lead.company      ?? listing.name,
+                rating:       lead.rating       ?? mapsData.rating,
+                review_count: lead.review_count ?? mapsData.reviewCount,
+              };
+              // Maps hours override site hours (Google's data is structured and current)
+              if (mapsData.mapsHours && !lead.business_hours) {
+                merged.business_hours = mapsData.mapsHours;
+                const h = mapsData.mapsHours.toLowerCase();
+                merged.has_after_hours_gap = !(/sat|sun/.test(h)) || !(/[6-9]\s*pm|10\s*pm|11\s*pm/.test(h));
+              }
+              merged.lead_score = this._scoreLead(merged);
+              leads.push(merged);
             }
           }
           this._scrapedToday.set(cityKey, (this._scrapedToday.get(cityKey) ?? 0) + 1);
@@ -604,28 +648,67 @@ export class FreeScraperNode extends BaseNode {
     return leads;
   }
 
-  async _getMapsWebsite(ctx, mapsUrl) {
+  async _getMapsListingData(ctx, mapsUrl) {
     const page = await ctx.newPage();
     try {
       await this._prepPage(page);
       await page.goto(mapsUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
       await sleep(jitter(2000, 1000));
       return await page.evaluate(() => {
-        // Website button in Maps place panel
-        const candidates = [
+        // ── Website URL ──────────────────────────────────────────────────────
+        let website = null;
+        const wCandidates = [
           ...document.querySelectorAll('a[data-item-id="authority"]'),
-          ...document.querySelectorAll('a[aria-label*="website"]'),
-          ...document.querySelectorAll('a[jsaction*="pane.rating.moreReviews"]'),
+          ...document.querySelectorAll('a[aria-label*="website" i]'),
+          ...document.querySelectorAll('a[href*="http"][data-tooltip*="website" i]'),
         ];
-        for (const el of candidates) {
+        for (const el of wCandidates) {
           try {
             const u = new URL(el.href);
-            if (!u.hostname.includes('google')) return el.href;
+            if (!u.hostname.includes('google')) { website = el.href; break; }
           } catch {}
         }
-        return null;
+
+        // ── Rating ───────────────────────────────────────────────────────────
+        let rating = null;
+        const rEl = document.querySelector(
+          '[class*="fontDisplayLarge"], span[aria-label*=" star" i], [class*="Aq14fc"]'
+        );
+        if (rEl) {
+          const val = parseFloat(rEl.textContent?.replace(',', '.') ?? '');
+          if (!isNaN(val) && val >= 1 && val <= 5) rating = val;
+        }
+        if (!rating) {
+          const ariaMatch = (document.querySelector('[aria-label*=" star" i]')?.getAttribute('aria-label') ?? '')
+            .match(/([\d.]+)\s*star/i);
+          if (ariaMatch) rating = parseFloat(ariaMatch[1]);
+        }
+
+        // ── Review count ─────────────────────────────────────────────────────
+        let reviewCount = null;
+        const rcEl = document.querySelector(
+          'button[aria-label*="review" i], [class*="hqzQac"] span, [data-section-id*="review"] span'
+        );
+        if (rcEl) {
+          const m = (rcEl.textContent ?? rcEl.getAttribute('aria-label') ?? '').match(/([\d,]+)\s*review/i);
+          if (m) reviewCount = parseInt(m[1].replace(/,/g, ''), 10);
+        }
+
+        // ── Business hours from Maps place panel ─────────────────────────────
+        let mapsHours = null;
+        const hoursTable = document.querySelector(
+          'table[class*="WgFkxc"], [data-section-id="oh"] table, [aria-label*="hours" i] table'
+        );
+        if (hoursTable) {
+          const rows = [...hoursTable.querySelectorAll('tr')]
+            .map(r => r.textContent?.replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+          if (rows.length > 0) mapsHours = rows.join(' | ').slice(0, 200);
+        }
+
+        return { website, rating, reviewCount, mapsHours };
       });
-    } catch { return null; }
+    } catch { return { website: null, rating: null, reviewCount: null, mapsHours: null }; }
     finally { await page.close().catch(() => {}); }
   }
 
@@ -642,6 +725,7 @@ export class FreeScraperNode extends BaseNode {
 
     const base = {
       email:               null,
+      first_name:          null,
       phone:               null,
       name:                null,
       title:               null,
@@ -654,7 +738,11 @@ export class FreeScraperNode extends BaseNode {
       business_hours:      null,
       has_after_hours_gap: true,
       has_contact_form:    false,
+      has_booking_widget:  false,
       site_platform:       'custom',
+      rating:              null,
+      review_count:        null,
+      lead_score:          0,
       confidence:          null,
       verified:            null,
       linkedin_url:        null,
@@ -671,7 +759,13 @@ export class FreeScraperNode extends BaseNode {
     base.business_hours      = site.businessHours;
     base.has_after_hours_gap = site.hasAfterHoursGap;
     base.has_contact_form    = site.hasContactForm;
+    base.has_booking_widget  = site.hasBookingWidget;
     base.site_platform       = site.sitePlatform;
+
+    // Extract first name for email template {{first_name}}
+    if (site.ownerName) {
+      base.first_name = site.ownerName.trim().split(/\s+/)[0] ?? null;
+    }
 
     if (site.hasChatbot) {
       this.increment('chatbots_found');
@@ -679,24 +773,39 @@ export class FreeScraperNode extends BaseNode {
     }
 
     if (site.emails.length > 0) {
-      // Return up to 2 real scraped emails as separate leads
-      return site.emails.slice(0, 2).map(email => ({ ...base, email, confidence: 'scraped' }));
+      return site.emails.slice(0, 2).map(email => ({
+        ...base, email, confidence: 'scraped',
+        lead_score: this._scoreLead({ ...base, email, confidence: 'scraped' }),
+      }));
     }
 
     // ── Layer 2: RDAP/WHOIS registrant lookup ───────────────────────────────
-    const whoisEmail = await this._whoisEmail(domain);
-    if (whoisEmail) {
-      return { ...base, email: whoisEmail, confidence: 'whois' };
+    const whoisResult = await this._whoisLookup(domain);
+    if (whoisResult.email) {
+      // Also fill name from WHOIS if not already found on site
+      if (!base.name && whoisResult.name) {
+        base.name       = whoisResult.name;
+        base.first_name = whoisResult.name.trim().split(/\s+/)[0] ?? null;
+      }
+      const lead = { ...base, email: whoisResult.email, confidence: 'whois' };
+      lead.lead_score = this._scoreLead(lead);
+      return lead;
     }
 
     // ── Layer 3: Pattern guess + MX validation ──────────────────────────────
-    const guessed = await this._guessEmail(domain, site.ownerName);
+    const guessed = await this._guessEmail(domain, base.name);
     if (guessed) {
-      return { ...base, email: guessed, confidence: 'guessed' };
+      const lead = { ...base, email: guessed, confidence: 'guessed' };
+      lead.lead_score = this._scoreLead(lead);
+      return lead;
     }
 
-    // Keep phone-only leads — still reachable
-    if (base.phone) return { ...base, confidence: 'phone_only' };
+    // Keep phone-only leads — still reachable by the sales team
+    if (base.phone) {
+      const lead = { ...base, confidence: 'phone_only' };
+      lead.lead_score = this._scoreLead(lead);
+      return lead;
+    }
 
     return null;
   }
@@ -707,7 +816,8 @@ export class FreeScraperNode extends BaseNode {
     const result = {
       emails: [], phone: null, ownerName: null,
       hasChatbot: false, chatbotName: null, tagline: null, siteName: null,
-      businessHours: null, hasAfterHoursGap: true, hasContactForm: false, sitePlatform: 'custom',
+      businessHours: null, hasAfterHoursGap: true, hasContactForm: false,
+      hasBookingWidget: false, sitePlatform: 'custom',
     };
 
     const browser = await this._ensureBrowser();
@@ -794,7 +904,7 @@ export class FreeScraperNode extends BaseNode {
   }
 
   async _extractPageData(page) {
-    return page.evaluate((sigs) => {
+    return page.evaluate((sigs, bookingSigs) => {
       const html     = document.documentElement.outerHTML.toLowerCase();
       const bodyText = document.body?.innerText ?? '';
 
@@ -805,11 +915,22 @@ export class FreeScraperNode extends BaseNode {
         ...(html.match(/mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/gi) || [])
           .map(m => m.replace(/^mailto:/i, '')),
       ];
-      const emails = [...new Set(raw)].filter(e => {
+      const filtered = [...new Set(raw)].filter(e => {
         const l = e.toLowerCase();
         return !l.includes('example.com') && !l.includes('sentry') && !l.includes('wixpress')
             && !l.includes('.png') && !l.includes('.jpg') && !l.includes('.css')
             && !l.endsWith('.js') && l.length < 80;
+      });
+      // Rank emails: owner-like short prefix first, generic last
+      const GENERIC = new Set(['info','contact','hello','office','inquiry','inquiries','mail','email']);
+      const emails = filtered.sort((a, b) => {
+        const pa = a.split('@')[0].toLowerCase().replace(/[^a-z]/g,'');
+        const pb = b.split('@')[0].toLowerCase().replace(/[^a-z]/g,'');
+        const aGeneric = GENERIC.has(pa) ? 1 : 0;
+        const bGeneric = GENERIC.has(pb) ? 1 : 0;
+        if (aGeneric !== bGeneric) return aGeneric - bGeneric;
+        // Shorter prefixes (first names) rank higher than long compound ones
+        return pa.length - pb.length;
       });
 
       // Phone
@@ -866,28 +987,45 @@ export class FreeScraperNode extends BaseNode {
         }
       }
 
-      // Business hours — detect "Mon-Fri 9am-5pm" style text, flag closed hours
+      // Business hours — handle inline text, tables, and dl/dt formats
       let businessHours = null;
-      let hasAfterHoursGap = false;
-      const hoursMatch = bodyText.match(
-        /(?:hours?|open)[:\s]*([^\n]{5,80}(?:am|pm|closed)[^\n]{0,60})/i
-      );
-      if (hoursMatch) {
-        businessHours = hoursMatch[1].trim().slice(0, 120);
-        // If hours text lacks weekend or evening coverage, flag the gap
+      let hasAfterHoursGap = true;
+
+      // Try structured hours tables first (most reliable)
+      const hourRows = [...document.querySelectorAll('table tr, .hours-row, [class*="hours"] li, dl dt')]
+        .map(el => el.textContent?.trim()).filter(t => t && /(?:mon|tue|wed|thu|fri|sat|sun)/i.test(t))
+        .slice(0, 7);
+      if (hourRows.length > 0) {
+        businessHours = hourRows.join(' | ').slice(0, 200);
+      } else {
+        // Fallback: inline sentence match
+        const m = bodyText.match(/(?:hours?|open(?:ing)?\s+hours?)[:\s]*([^\n]{5,120}(?:am|pm|closed)[^\n]{0,80})/i);
+        if (m) businessHours = m[1].trim().slice(0, 200);
+      }
+
+      if (businessHours) {
         const h = businessHours.toLowerCase();
         const hasWeekend = /sat|sun/.test(h);
-        const hasEvening = /[6-9]\s*pm|10\s*pm|11\s*pm|midnight/.test(h);
+        const hasEvening = /[6-9]\s*(?:pm|p\.m)|10\s*(?:pm|p\.m)|11\s*(?:pm|p\.m)|midnight/.test(h);
         hasAfterHoursGap = !hasWeekend || !hasEvening;
-      } else {
-        // No hours listed at all — likely missing after-hours coverage
-        hasAfterHoursGap = true;
       }
+      // No hours text = likely M-F 9-5 shop → still flag the gap
 
       // Contact form detection
       const hasContactForm = !!document.querySelector(
-        'form[action], form[id*="contact"], form[class*="contact"], form[id*="inquiry"], form[class*="inquiry"]'
+        'form[action], form[id*="contact" i], form[class*="contact" i], form[id*="inquiry" i], form[class*="inquiry" i], form[id*="appt" i], form[id*="appoint" i]'
       );
+
+      // Booking widget detection — tech-forward owners, pitch Pro tier
+      let hasBookingWidget = false;
+      for (const sig of bookingSigs) {
+        if (html.includes(sig)) { hasBookingWidget = true; break; }
+      }
+      if (!hasBookingWidget) {
+        // DOM check for embedded booking iframes
+        const iframes = [...document.querySelectorAll('iframe[src]')];
+        hasBookingWidget = iframes.some(f => bookingSigs.some(sig => (f.src ?? '').toLowerCase().includes(sig)));
+      }
 
       // Website platform fingerprint
       let sitePlatform = 'custom';
@@ -896,7 +1034,7 @@ export class FreeScraperNode extends BaseNode {
       else if (html.includes('squarespace')) sitePlatform = 'squarespace';
       else if (html.includes('shopify')) sitePlatform = 'shopify';
       else if (html.includes('webflow')) sitePlatform = 'webflow';
-      else if (html.includes('godaddy')) sitePlatform = 'godaddy';
+      else if (html.includes('godaddy') || html.includes('godaddysites')) sitePlatform = 'godaddy';
 
       const metaDesc = document.querySelector('meta[name="description"]')?.getAttribute('content')
                     ?? document.querySelector('meta[property="og:description"]')?.getAttribute('content')
@@ -907,9 +1045,9 @@ export class FreeScraperNode extends BaseNode {
       return {
         emails, phone, hasChatbot, chatbotName, ownerName, siteName,
         tagline: (metaDesc ?? '').slice(0, 200).trim() || null,
-        businessHours, hasAfterHoursGap, hasContactForm, sitePlatform,
+        businessHours, hasAfterHoursGap, hasContactForm, hasBookingWidget, sitePlatform,
       };
-    }, CHATBOT_SIGNATURES);
+    }, CHATBOT_SIGNATURES, BOOKING_SIGNATURES);
   }
 
   _mergeInto(target, src) {
@@ -923,12 +1061,14 @@ export class FreeScraperNode extends BaseNode {
     target.businessHours     = target.businessHours     || src.businessHours;
     target.hasAfterHoursGap  = target.hasAfterHoursGap  ?? src.hasAfterHoursGap;
     target.hasContactForm    = target.hasContactForm     ?? src.hasContactForm;
+    target.hasBookingWidget  = target.hasBookingWidget   || src.hasBookingWidget;
     target.sitePlatform      = target.sitePlatform      || src.sitePlatform;
   }
 
   // ── Layer 2: RDAP/WHOIS ───────────────────────────────────────────────────
 
-  async _whoisEmail(domain) {
+  async _whoisLookup(domain) {
+    const result = { email: null, name: null };
     try {
       const resp = await axios.get(`https://rdap.org/domain/${domain}`, {
         timeout: 6000,
@@ -938,17 +1078,62 @@ export class FreeScraperNode extends BaseNode {
         const roles = entity?.roles ?? [];
         if (!roles.includes('registrant') && !roles.includes('administrative')) continue;
         for (const field of entity?.vcardArray?.[1] ?? []) {
-          if (field[0] === 'email' && field[3]) {
+          if (field[0] === 'email' && field[3] && !result.email) {
             const e = field[3];
-            if (e.includes('@') && !e.includes('redacted') && !e.includes('privacy')) return e;
+            if (e.includes('@') && !e.includes('redacted') && !e.includes('privacy')
+                && !e.includes('whoisprivacy') && !e.includes('domainsByProxy')) {
+              result.email = e;
+            }
+          }
+          if (field[0] === 'fn' && field[3] && !result.name) {
+            const n = field[3];
+            // Skip obvious privacy placeholder names
+            if (n && !/redact|private|proxy|protect|registrant|whois/i.test(n)) {
+              result.name = n;
+            }
           }
         }
       }
     } catch {}
-    return null;
+    return result;
   }
 
   // ── Layer 3: Email pattern + MX check ────────────────────────────────────
+
+  // ── Lead scoring (0–100) — drives email_node send priority ──────────────────
+  // Higher = hotter prospect for the Heinrichs chatbot pitch.
+
+  _scoreLead(lead) {
+    let score = 0;
+
+    // Email quality
+    if (lead.email) {
+      if (lead.confidence === 'scraped') score += 30;
+      else if (lead.confidence === 'whois') score += 22;
+      else if (lead.confidence === 'guessed') score += 12;
+    }
+
+    // Core pain point: loses leads after business hours (Heinrichs' entire pitch)
+    if (lead.has_after_hours_gap) score += 25;
+
+    // Zero lead capture at all = maximum urgency
+    if (!lead.has_contact_form) score += 15;
+
+    // Personalisable email = higher reply rate
+    if (lead.first_name || lead.name) score += 10;
+
+    // Phone as backup contact
+    if (lead.phone) score += 5;
+
+    // Booking widget = already paying for automation → upsell Pro tier
+    if (lead.has_booking_widget) score += 5;
+
+    // Established business signal
+    if (lead.review_count && lead.review_count >= 10) score += 5;
+    if (lead.rating && lead.rating >= 4.0) score += 3;
+
+    return Math.min(score, 100);
+  }
 
   async _guessEmail(domain, ownerName) {
     const hasMx = await this._checkMx(domain);
@@ -1082,15 +1267,18 @@ export class FreeScraperNode extends BaseNode {
   }
 
   collectMetrics() {
-    const found   = this.getCounter('leads_found');
+    const found     = this.getCounter('leads_found');
     const withEmail = this.getCounter('leads_with_email');
     return {
-      leads_found:      found,
-      leads_with_email: withEmail,
-      leads_guessed:    this.getCounter('leads_guessed'),
-      chatbots_found:   this.getCounter('chatbots_found'),
-      errors:           this.getCounter('errors'),
-      email_rate:       found > 0 ? withEmail / found : 0,
+      leads_found:        found,
+      leads_with_email:   withEmail,
+      leads_guessed:      this.getCounter('leads_guessed'),
+      leads_with_name:    this.getCounter('leads_with_name'),
+      hot_leads:          this.getCounter('hot_leads'),       // score >= 60
+      chatbots_found:     this.getCounter('chatbots_found'),
+      domains_skipped:    this.getCounter('domains_skipped'),
+      errors:             this.getCounter('errors'),
+      email_rate:         found > 0 ? withEmail / found : 0,
     };
   }
 

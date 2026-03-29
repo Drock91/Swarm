@@ -149,6 +149,7 @@ const SKIP_DOMAINS = new Set([
   'inc.com', 'entrepreneur.com', 'foxnews.com', 'cnn.com', 'usatoday.com',
   'apnews.com', 'axios.com', 'thehill.com', 'marketwatch.com', 'kiplinger.com',
   'merriam-webster.com', 'vocabulary.com', 'dictionary.com', 'britannica.com',
+  'wordreference.com', 'thesaurus.com', 'collinsdictionary.com', 'macmillandictionary.com',
   'healthline.com', 'mayoclinic.org', 'medlineplus.gov', 'nih.gov', 'cdc.gov',
   // National insurance / dental chains
   'deltadental.com', 'cigna.com', 'aetna.com', 'anthem.com', 'unitedhealthcare.com',
@@ -540,24 +541,27 @@ export class FreeScraperNode extends BaseNode {
         const listings = await page.evaluate(() => {
           const results = [];
           const seen    = new Set();
-          // BBB changed their HTML — use profile links as the anchor point
-          document.querySelectorAll('a[href*="/profile/"]').forEach(link => {
-            const href = link.href;
-            if (!href || seen.has(href)) return;
+          // Scope to the main search results section — avoid sidebar/nav profile links
+          const mainArea = document.querySelector(
+            'main, #main-content, [class*="search-results"], [class*="SearchResults"], #SearchResults, .search-results-container'
+          ) ?? document.body;
+          // Use businessName elements as anchors — more targeted than all /profile/ links
+          const nameEls = mainArea.querySelectorAll(
+            '[class*="businessName"], [class*="business-name"], h2 a[href*="/profile/"], h3 a[href*="/profile/"]'
+          );
+          nameEls.forEach(el => {
+            const profileLink = el.closest('a[href*="/profile/"]') ?? el.querySelector('a[href*="/profile/"]') ?? el;
+            const href = profileLink?.href;
+            if (!href || seen.has(href) || !href.includes('/profile/')) return;
             seen.add(href);
-            // Walk up to find the result container
-            const container = link.closest('li, article, [class*="result"], [class*="card"], [class*="Content"]')
-                           ?? link.parentElement?.parentElement;
-            const nameEl = container?.querySelector('h2, h3, [class*="business-name"], [class*="businessName"], strong')
-                        ?? link;
-            const name = nameEl?.textContent?.trim();
+            const name = el.textContent?.trim();
             if (!name || name.length < 3 || name.length > 120) return;
-            const phone   = container?.querySelector('[href^="tel:"], [class*="phone"]')?.textContent?.trim() ?? null;
-            const siteEl  = container?.querySelector('a[target="_blank"][href^="http"]:not([href*="bbb.org"])');
-            const website = siteEl?.href ?? null;
-            results.push({ name, phone, website, bbbHref: href });
+            const container = el.closest('li, article, [class*="result"], [class*="card"]') ?? el.parentElement?.parentElement;
+            const phone     = container?.querySelector('[href^="tel:"], [class*="phone"]')?.textContent?.trim() ?? null;
+            const siteEl    = container?.querySelector('a[target="_blank"][href^="http"]:not([href*="bbb.org"])');
+            results.push({ name, phone, website: siteEl?.href ?? null, bbbHref: href });
           });
-          return results.slice(0, 25);
+          return results.slice(0, 20);
         });
 
         for (const listing of listings) {
@@ -985,14 +989,18 @@ export class FreeScraperNode extends BaseNode {
       const homeData = await this._extractPageData(page);
       this._mergeInto(result, homeData);
 
-      // Relevance gate — skip sites that have nothing to do with the target industry
+      // Relevance gate — site must mention industry keywords 2+ times (not just a dictionary entry)
       const keywords = INDUSTRY_KEYWORDS[industry] ?? [];
       if (keywords.length > 0) {
         const bodyLow = (await page.evaluate(() => document.body?.innerText?.toLowerCase() ?? '').catch(() => ''));
-        const isRelevant = keywords.some(kw => bodyLow.includes(kw));
-        if (!isRelevant) {
-          log.debug({ event: 'skip_irrelevant', domain, industry });
-          return result; // return empty result — no emails, no phone, so lead is dropped
+        const hitCount = keywords.reduce((n, kw) => {
+          let count = 0, pos = 0;
+          while ((pos = bodyLow.indexOf(kw, pos)) !== -1) { count++; pos += kw.length; }
+          return n + count;
+        }, 0);
+        if (hitCount < 2) {
+          log.debug({ event: 'skip_irrelevant', domain, industry, hits: hitCount });
+          return result;
         }
       }
 

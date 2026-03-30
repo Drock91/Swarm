@@ -152,8 +152,12 @@ export class SharedMemory {
   }
 
   async getLeads(filters = null, limit = 100) {
-    const params = { TableName: this._table('leads'), Limit: limit };
-    if (filters && Object.keys(filters).length > 0) {
+    const hasFilters = filters && Object.keys(filters).length > 0;
+    // DynamoDB Limit applies to items *scanned*, not items returned after filtering.
+    // Only pass Limit when there is no filter; otherwise scan all and slice in memory.
+    const params = { TableName: this._table('leads') };
+    if (!hasFilters) params.Limit = limit;
+    if (hasFilters) {
       const exprs = [];
       const vals  = {};
       for (const [k, v] of Object.entries(filters)) {
@@ -165,7 +169,8 @@ export class SharedMemory {
       params.ExpressionAttributeValues = vals;
     }
     const resp = await this.ddb.send(new ScanCommand(params));
-    return resp.Items ?? [];
+    const items = resp.Items ?? [];
+    return hasFilters ? items.slice(0, limit) : items;
   }
 
   async countLeads(sourceNode = null) {

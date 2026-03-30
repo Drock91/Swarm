@@ -188,11 +188,12 @@ export class EmailNode extends BaseNode {
         l.email && !l.sequence_state && !l.unsubscribed && !l.bounced && !l.complained && !l.suppressed,
       );
       if (!unseeded.length) return;
-      const now = Math.floor(Date.now() / 1000);
+      // Offset by 5 minutes so newly seeded leads never fire on the same cycle they're created.
+      const sendAt = Math.floor(Date.now() / 1000) + 300;
       for (const lead of unseeded) {
         await this.memory.upsertLead({
           ...lead,
-          sequence_state: { lead_id: lead.lead_id, step: 0, next_send_at: now, status: 'pending' },
+          sequence_state: { lead_id: lead.lead_id, step: 0, next_send_at: sendAt, status: 'pending' },
         });
       }
       log.info({ event: 'leads_seeded', count: unseeded.length });

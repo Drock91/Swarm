@@ -130,6 +130,12 @@ export class EmailNode extends BaseNode {
 
     await this._seedNewLeads();
 
+    // Kill switch — set EMAIL_ENABLED=true in .env to allow sending
+    if (process.env.EMAIL_ENABLED !== 'true') {
+      log.info({ event: 'email_sending_disabled', reason: 'EMAIL_ENABLED is not set to true' });
+      return;
+    }
+
     if (this._paused) {
       log.warn({ event: 'email_auto_paused', bounces: this._bounces, complaints: this._complaints });
       return;

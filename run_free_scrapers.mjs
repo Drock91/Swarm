@@ -105,6 +105,8 @@ const STATE_FILTERS = {
   great_lakes:       c => [', IL', ', MI', ', WI', ', MN', ', MO', ', NE', ', IA', ', SD', ', ND'].some(s => c.endsWith(s)),
   mountain_southwest:c => [', AZ', ', CO', ', NV', ', UT', ', NM', ', ID'].some(s => c.endsWith(s)),
   west_coast:        c => [', CA', ', WA', ', OR', ', AK', ', HI'].some(s => c.endsWith(s)),
+  // Top veteran-friendly states by military base density + veteran population
+  veteran_friendly:  c => [', TX', ', FL', ', VA', ', NC', ', GA', ', SC', ', CO', ', NV', ', WA', ', TN', ', AK', ', HI'].some(s => c.endsWith(s)),
 };
 
 const filterKey  = args.find(a => STATE_FILTERS[a] || a === 'all') ?? null;

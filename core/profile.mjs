@@ -56,16 +56,18 @@ export function emailNodeConfig(profile) {
     offer_cta_url:    offer?.primary?.cta_url  ?? business?.website ?? '',
     pain_solved:      offer?.primary?.pain_solved ?? '',
 
-    // Sequence settings
-    sequence_length:  email_sequences?.sequence_length   ?? 3,
-    follow_up_days:   email_sequences?.follow_up_days    ?? [0, 3, 7],
-    send_window_start: email_sequences?.send_window_start ?? '08:00',
-    send_window_end:  email_sequences?.send_window_end   ?? '17:00',
-    send_days:        email_sequences?.send_days         ?? ['Monday','Tuesday','Wednesday','Thursday'],
-    tone:             email_sequences?.tone              ?? 'conversational and direct',
+    // Sequence settings — key names must match EmailNode constructor exactly
+    sequence_steps:       email_sequences?.sequence_length    ?? 3,
+    follow_up_intervals:  email_sequences?.follow_up_days     ?? [3, 7],
+    daily_send_limit:     email_sequences?.daily_send_limit   ?? 300,
+    warmup_start_date:    email_sequences?.warmup_start_date  ?? new Date().toISOString().slice(0, 10),
+    send_window_start:    email_sequences?.send_window_start  ?? '08:00',
+    send_window_end:      email_sequences?.send_window_end    ?? '17:00',
+    send_days:            email_sequences?.send_days          ?? ['Monday','Tuesday','Wednesday','Thursday','Friday'],
+    tone:                 email_sequences?.tone               ?? 'conversational and direct',
 
-    // Templates as generation context (GPT uses these as seed instructions)
-    sequence_templates: email_sequences?.templates       ?? {},
+    // Templates as generation context (LLM uses these as seed instructions)
+    sequence_templates:   email_sequences?.templates          ?? {},
 
     // ICP context so GPT can personalise per-lead
     icp_description:  icp?.description   ?? '',

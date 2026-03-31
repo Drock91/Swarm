@@ -311,10 +311,9 @@ export class EmailNode extends BaseNode {
   // ── Email construction ───────────────────────────────────────────────────────
 
   _linkify(line) {
-    // Convert full https:// URLs to anchor tags first
+    if (/<a[\s>]/i.test(line)) return line;
     line = line.replace(/https?:\/\/[^\s<"]+/g, url => `<a href="${url}" style="color:#0066cc;">${url}</a>`);
-    // Then catch bare heinrichstech.com references not already inside an href
-    line = line.replace(/(?<!href="|">)(heinrichstech\.com[^\s<"]*)/g, domain => `<a href="https://${domain}" style="color:#0066cc;">${domain}</a>`);
+    line = line.replace(/(?<![/"'>@\w])(heinrichstech\.com[^\s<"]*)/gi, domain => `<a href="https://${domain}" style="color:#0066cc;">${domain}</a>`);
     return line;
   }
 
@@ -387,8 +386,8 @@ export class EmailNode extends BaseNode {
       `- If you know what their business does, reference it specifically in the first sentence`,
       `- If they have an after-hours gap, that is your hook — they are losing leads right now`,
       `- If they have no contact form, that makes the urgency even higher`,
-      `- Always include a clickable CTA link using the full URL: https://heinrichstech.com`,
-      `- Never write the URL as plain text. Always write it as: https://heinrichstech.com`,
+      `- Always end with the full URL on its own line: https://heinrichstech.com`,
+      `- Write the URL as plain text only. Do not write HTML tags.`,
     ].join('\n');
   }
 

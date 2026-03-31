@@ -41,11 +41,10 @@ const OPT_OUT_PATTERNS = [
 
 // ── Warm-up schedule: max emails per day by week ──────────────────────────────
 const WARMUP_SCHEDULE = [
-  20,   // week 1
-  40,   // week 2
-  80,   // week 3
-  120,  // week 4
-  150,  // week 5+
+  40,   // week 1
+  80,   // week 2
+  120,  // week 3
+  150,  // week 4+
 ];
 
 export class EmailNode extends BaseNode {

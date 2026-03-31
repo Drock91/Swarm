@@ -212,13 +212,23 @@ export class EmailNode extends BaseNode {
         (l.sequence_state?.next_send_at ?? Infinity) <= now &&
         !l.unsubscribed && !l.bounced && !l.complained && !l.replied_human,
       )
-      // Hot leads first — score 60+ get sent before everything else
       .sort((a, b) => (b.lead_score ?? 0) - (a.lead_score ?? 0));
 
-    for (const lead of due) {
+    // Follow-ups (step > 0) are replies in existing threads — send all due ones first,
+    // they don't count against the daily cap.
+    const followUps = due.filter(l => (l.sequence_state?.step ?? 0) > 0);
+    const coldLeads = due.filter(l => (l.sequence_state?.step ?? 0) === 0);
+
+    for (const lead of followUps) {
+      await this._sendSequenceEmail(lead);
+      const delay = jitter(45_000, 135_000);
+      log.info({ event: 'send_pacing', next_in_ms: delay });
+      await sleep(delay);
+    }
+
+    for (const lead of coldLeads) {
       if (this._sentToday >= cap) break;
       await this._sendSequenceEmail(lead);
-      // Human-like pacing — 45s to 3min between sends
       const delay = jitter(45_000, 135_000);
       log.info({ event: 'send_pacing', next_in_ms: delay });
       await sleep(delay);
@@ -286,7 +296,7 @@ export class EmailNode extends BaseNode {
       });
 
       this.increment('emails_sent');
-      this._sentToday++;
+      if (step === 0) this._sentToday++;  // only cold outreach counts against daily cap
       await this.memory.writeMetric(this.nodeId, this.nodeType, 'emails_sent', 1);
 
       console.log(`  [EMAIL] step ${step + 1}/${this.sequenceSteps} → ${lead.email} | "${subject}" | score:${lead.lead_score ?? 0}`);

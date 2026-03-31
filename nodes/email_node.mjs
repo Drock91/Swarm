@@ -310,6 +310,14 @@ export class EmailNode extends BaseNode {
 
   // ── Email construction ───────────────────────────────────────────────────────
 
+  _linkify(line) {
+    // Convert full https:// URLs to anchor tags first
+    line = line.replace(/https?:\/\/[^\s<"]+/g, url => `<a href="${url}" style="color:#0066cc;">${url}</a>`);
+    // Then catch bare heinrichstech.com references not already inside an href
+    line = line.replace(/(?<!href="|">)(heinrichstech\.com[^\s<"]*)/g, domain => `<a href="https://${domain}" style="color:#0066cc;">${domain}</a>`);
+    return line;
+  }
+
   _buildHtmlEmail(bodyText, lead) {
     const unsubUrl = this._signedUnsubUrl(lead.lead_id);
     // Plain-text style HTML — higher deliverability than fancy HTML
@@ -317,7 +325,7 @@ export class EmailNode extends BaseNode {
       `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6;max-width:600px;">`,
       bodyText
         .split('\n')
-        .map(line => line.trim() ? `<p style="margin:0 0 12px 0;">${line}</p>` : '')
+        .map(line => line.trim() ? `<p style="margin:0 0 12px 0;">${this._linkify(line)}</p>` : '')
         .join(''),
       `<br>`,
       `<div style="font-size:11px;color:#aaa;border-top:1px solid #eee;padding-top:8px;margin-top:20px;">`,
@@ -379,7 +387,8 @@ export class EmailNode extends BaseNode {
       `- If you know what their business does, reference it specifically in the first sentence`,
       `- If they have an after-hours gap, that is your hook — they are losing leads right now`,
       `- If they have no contact form, that makes the urgency even higher`,
-      `- Always mention the free trial and the website`,
+      `- Always include a clickable CTA link using the full URL: https://heinrichstech.com`,
+      `- Never write the URL as plain text. Always write it as: https://heinrichstech.com`,
     ].join('\n');
   }
 

@@ -39,7 +39,9 @@ import { log }       from './core/logger.mjs';
 
 const PORT            = Number(process.env.WEBHOOK_PORT         ?? 3001);
 const BREVO_SECRET    = process.env.BREVO_WEBHOOK_SECRET        ?? '';
+const BREVO_API_KEY   = process.env.BREVO_API_KEY               ?? '';
 const IMAP_POLL_MS    = Number(process.env.IMAP_POLL_INTERVAL   ?? 60_000);
+const BREVO_POLL_MS   = Number(process.env.BREVO_POLL_INTERVAL  ?? 5 * 60_000);
 const IMAP_CONFIGURED = !!(process.env.IMAP_HOST && process.env.IMAP_USER && process.env.IMAP_PASS);
 
 // Minimal EmailNode — not started as a cycle-running node.
@@ -204,6 +206,49 @@ function unsubPage(message, success = false) {
 </html>`;
 }
 
+// ── Brevo events poller ───────────────────────────────────────────────────────
+// Transactional webhooks don't support click/open events on this plan, so we
+// poll the REST API every BREVO_POLL_MS and route events through handleBrevoEvent.
+
+const BREVO_EVENT_MAP = {
+  clicks:          'click',
+  opens:           'opened',
+  hardBounces:     'hard_bounce',
+  softBounces:     'soft_bounce',
+  spam:            'spam',
+  unsubscriptions: 'unsubscribe',
+};
+
+const _seenBrevoEvents = new Set();
+
+async function pollBrevoEvents() {
+  if (!BREVO_API_KEY) return;
+  const today = new Date().toISOString().slice(0, 10);
+
+  for (const [apiEvent, handlerEvent] of Object.entries(BREVO_EVENT_MAP)) {
+    try {
+      const url  = `https://api.brevo.com/v3/smtp/statistics/events?event=${apiEvent}&startDate=${today}&limit=100`;
+      const resp = await fetch(url, { headers: { 'api-key': BREVO_API_KEY } });
+      if (!resp.ok) continue;
+      const { events = [] } = await resp.json();
+
+      for (const ev of events) {
+        const key = `${ev.messageId}::${handlerEvent}::${ev.email}`;
+        if (_seenBrevoEvents.has(key)) continue;
+        _seenBrevoEvents.add(key);
+
+        // Don't count unsubscribe-link clicks as real CTA clicks
+        if (handlerEvent === 'click' && ev.link?.includes('/unsubscribe')) continue;
+
+        await emailNode.handleBrevoEvent({ event: handlerEvent, email: ev.email });
+        log.info({ event: 'brevo_poll_synced', type: handlerEvent, email: ev.email });
+      }
+    } catch (err) {
+      log.error({ event: 'brevo_poll_error', apiEvent, error: err.message });
+    }
+  }
+}
+
 // ── IMAP reply poller ─────────────────────────────────────────────────────────
 
 async function pollImap() {
@@ -278,9 +323,16 @@ app.listen(PORT, () => {
 });
 
 if (IMAP_CONFIGURED) {
-  // Initial poll on startup, then on interval
   pollImap();
   setInterval(pollImap, IMAP_POLL_MS);
 } else {
   log.info({ event: 'imap_disabled', reason: 'IMAP_HOST/USER/PASS not configured' });
+}
+
+if (BREVO_API_KEY) {
+  pollBrevoEvents();
+  setInterval(pollBrevoEvents, BREVO_POLL_MS);
+  log.info({ event: 'brevo_poller_started', interval_ms: BREVO_POLL_MS });
+} else {
+  log.warn({ event: 'brevo_poller_disabled', reason: 'BREVO_API_KEY not set' });
 }

@@ -17,14 +17,18 @@
  */
 
 import 'dotenv/config';
+import { DynamoDBClient, GetItemCommand } from '@aws-sdk/client-dynamodb';
+import { marshall, unmarshall }           from '@aws-sdk/util-dynamodb';
 import { SharedMemory }  from './core/shared_memory.mjs';
 import { EmailNode }     from './nodes/email_node.mjs';
 import { loadProfile, mergeProfileConfig } from './core/profile.mjs';
 
 const TEST_EMAIL   = 'mrheinrichs12@gmail.com';
 const TEST_LEAD_ID = 'test-lead-derek-001';
+const REGION       = process.env.AWS_REGION ?? 'us-east-1';
 
-const memory = new SharedMemory(process.env.AWS_REGION ?? 'us-east-1');
+const memory = new SharedMemory(REGION);
+const ddb    = new DynamoDBClient({ region: REGION });
 
 const profile = loadProfile();
 const config  = mergeProfileConfig('email_node', profile, {
@@ -32,13 +36,16 @@ const config  = mergeProfileConfig('email_node', profile, {
   from_email: process.env.SES_FROM_EMAIL,
   from_name:  process.env.SES_FROM_NAME ?? 'Derek',
 });
-const emailNode = new EmailNode(config, process.env.AWS_REGION ?? 'us-east-1');
+const emailNode = new EmailNode(config, REGION);
 
 const cmd = process.argv[2];
 
 async function getTestLead() {
-  const leads = await memory.getLeads({ lead_id: TEST_LEAD_ID }, 1);
-  return leads[0] ?? null;
+  const resp = await ddb.send(new GetItemCommand({
+    TableName: 'swarm-leads',
+    Key: marshall({ lead_id: TEST_LEAD_ID }),
+  }));
+  return resp.Item ? unmarshall(resp.Item) : null;
 }
 
 function printLead(lead) {

@@ -55,3 +55,16 @@ nul
 
 # Local workspace — exports, notes, scratch files (never committed)
 my-workspace
+
+# Scraper / runtime state
+scrape_progress.json
+send_log.txt
+leads.txt
+lead.txt
+*.csv
+
+# Diagnostic screenshots
+diag_*.png
+
+# Claude Code internal
+.claude/

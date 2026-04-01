@@ -223,12 +223,11 @@ const _seenBrevoEvents = new Set();
 
 async function pollBrevoEvents() {
   if (!BREVO_API_KEY) return;
-  const today    = new Date().toISOString().slice(0, 10);
-  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
 
   for (const [apiEvent, handlerEvent] of Object.entries(BREVO_EVENT_MAP)) {
     try {
-      const url  = `https://api.brevo.com/v3/smtp/statistics/events?event=${apiEvent}&startDate=${today}&endDate=${tomorrow}&limit=100`;
+      const url  = `https://api.brevo.com/v3/smtp/statistics/events?event=${apiEvent}&startDate=${today}&endDate=${today}&limit=100`;
       const resp = await fetch(url, { headers: { 'api-key': BREVO_API_KEY } });
       if (!resp.ok) continue;
       const { events = [] } = await resp.json();
